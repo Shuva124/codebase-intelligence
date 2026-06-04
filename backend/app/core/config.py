@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     
     # ADD THIS LINE:
     REPO_STORAGE_DIR: str = "/tmp/repos" 
+    
+    GITHUB_CLIENT_ID: str = "MOCK"
+    GITHUB_CLIENT_SECRET: str = "MOCK"
 
     class Config:
         env_file = ".env"

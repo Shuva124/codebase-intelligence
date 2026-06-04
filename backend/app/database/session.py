@@ -4,8 +4,9 @@ import chromadb
 from app.core.config import settings
 import os
 
-# PostgreSQL Setup
-engine = create_engine(settings.POSTGRES_URL)
+# Database Setup (Supports Postgres & SQLite)
+connect_args = {"check_same_thread": False} if settings.POSTGRES_URL.startswith("sqlite") else {}
+engine = create_engine(settings.POSTGRES_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

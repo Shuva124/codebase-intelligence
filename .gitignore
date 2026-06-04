@@ -2,3 +2,12 @@ backend/venv/
 frontend/node_modules/
 frontend/.next/
 .env
+
+# Python byte cache
+**/__pycache__/
+*.pyc
+
+# Local databases and storage
+backend/codebase_intel.db
+backend/chroma_db/
+backend/storage/
