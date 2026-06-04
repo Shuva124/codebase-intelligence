@@ -1,0 +1,10 @@
+fastapi==0.110.0
+uvicorn==0.29.0
+sqlalchemy==2.0.29
+psycopg2-binary==2.9.9
+chromadb==0.4.24
+google-generativeai==0.4.1
+passlib[bcrypt]==1.7.4
+pyjwt==2.8.0
+python-multipart==0.0.9
+python-dotenv==1.0.1
