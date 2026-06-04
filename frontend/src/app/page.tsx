@@ -4,17 +4,17 @@ import React, { useState, useEffect } from 'react';
 import DashboardShell from "@/components/layout/DashboardShell";
 import { 
   Sparkles, Search, Code, CheckCircle2, ChevronRight, FileText, 
-  ArrowRight, Loader2, Filter, CornerDownLeft, Database, Terminal
-} from "lucide-react";
-
-interface SnippetResult {
-  id: number;
-  file: string;
-  repo: string;
-  match: string;
-  snippet: string;
-  language: string;
-  description: string;
+    ArrowRight, Loader2, Filter, CornerDownLeft, Database, Terminal
+    } from "lucide-react";
+    
+    interface SnippetResult {
+      id: number;
+        file: string;
+          repo: string;
+            match: string;
+              snippet: string;
+                language: string;
+                  description: string;
 }
 
 const MOCK_RESULTS: SnippetResult[] = [
@@ -108,58 +108,49 @@ export default function Home() {
 
   return (
     <DashboardShell>
-      {/* Introduction Banner Card */}
-      <div className="relative bg-md-surface-container rounded-3xl p-6 md:p-8 shadow-md-elevation-1 mb-8 overflow-hidden">
-        {/* Glow light effect behind icon */}
-        <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-bl from-md-primary/10 to-transparent blur-2xl pointer-events-none -z-10" />
+      
+      {/* THE STICKER CARD */}
+      <div className="relative bg-white border-4 border-pg-fg rounded-2xl p-8 shadow-sticker-pink transition-all duration-300 ease-bounce-pop hover:-rotate-1 hover:scale-[1.01] mb-10 mt-4">
         
-        <div className="flex flex-col md:flex-row gap-6 items-start md:items-center justify-between">
-          <div className="flex gap-4 items-start md:items-center">
-            <div className="bg-md-secondary-container text-md-on-secondary-container p-3.5 rounded-2xl shadow-sm">
-              <Sparkles size={24} className="text-md-primary" />
-            </div>
-            <div>
-              <h3 className="text-xl md:text-2xl font-semibold tracking-tight text-md-on-background">Explore Semantically</h3>
-              <p className="text-sm md:text-base text-md-on-surface-variant/90 mt-1 max-w-xl">
-                Search your codebase using natural language. Query logic, structure, database setups, or API endpoints.
-              </p>
-            </div>
-          </div>
-          <div className="bg-md-primary/5 text-md-primary border border-md-primary/20 rounded-full px-4 py-1.5 text-xs font-semibold select-none flex items-center gap-1.5">
-            <Database size={13} />
-            <span>Indexed: 4,892 files</span>
-          </div>
+        {/* Floating icon half-in, half-out of the top border */}
+        <div className="absolute -top-7 left-8 bg-pg-mint p-3 rounded-full border-4 border-pg-fg shadow-hard transition-transform duration-300 hover:rotate-12 cursor-pointer">
+          <Sparkles size={28} strokeWidth={2.5} className="text-pg-fg" />
         </div>
+
+        <h3 className="text-2xl font-heading font-black mb-3 mt-2 text-pg-fg">Explore Semantically!</h3>
+        <p className="text-base md:text-lg font-bold leading-relaxed text-pg-fg/90">
+          Query your files using natural language. Try searching for <code className="bg-pg-muted border border-pg-fg/20 px-1.5 py-0.5 rounded-lg text-sm select-all">auth</code>, <code className="bg-pg-muted border border-pg-fg/20 px-1.5 py-0.5 rounded-lg text-sm select-all">vector</code>, or select a repository tag below to filter codebase chunks.
+        </p>
       </div>
 
       {/* Interactive Form Controls */}
       <form onSubmit={handleSearch} className="space-y-6 mb-10">
         
-        {/* MATERIAL YOU FILLED TEXT FIELD */}
+        {/* PLAYFUL GEOMETRIC TEXT FIELD */}
         <div className="relative group">
-          <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none text-md-on-surface-variant/70 group-focus-within:text-md-primary transition-colors">
-            <Search size={22} strokeWidth={2} />
+          <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none text-pg-fg/50 group-focus-within:text-pg-accent transition-colors z-10">
+            <Search size={24} strokeWidth={3} />
           </div>
           <input
             type="text"
             placeholder="Search code (e.g. 'how do we authenticate JWT tokens?', 'postgres connection pool')"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full h-14 pl-14 pr-24 bg-md-surface-container-low text-md-on-background font-medium placeholder-md-on-surface-variant/50 rounded-t-xl border-b-2 border-md-outline/30 focus:border-md-primary focus:outline-none transition-all duration-200 text-base"
+            className="w-full h-16 pl-14 pr-24 bg-white text-pg-fg font-black placeholder-pg-fg/40 rounded-2xl border-4 border-pg-fg shadow-hard transition-all duration-300 ease-bounce-pop focus:outline-none focus:-translate-x-[2px] focus:-translate-y-[2px] focus:shadow-hard-hover text-base md:text-lg"
           />
           {/* Enter key badge indicator */}
           <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none select-none">
-            <kbd className="hidden md:flex items-center gap-1 bg-md-surface-container border border-md-outline/20 px-2.5 py-1 rounded-lg text-xs font-semibold text-md-on-surface-variant/75">
+            <kbd className="hidden md:flex items-center gap-1 bg-pg-muted border-2 border-pg-fg px-2.5 py-1 rounded-xl text-xs font-black text-pg-fg shadow-sm">
               <span>Search</span>
-              <CornerDownLeft size={10} />
+              <CornerDownLeft size={10} strokeWidth={3} />
             </kbd>
           </div>
         </div>
 
         {/* Filters and Repository Chips */}
         <div className="flex flex-wrap items-center gap-3.5 select-none">
-          <span className="text-xs font-bold text-md-on-surface-variant/80 uppercase tracking-wider flex items-center gap-1.5 mr-1">
-            <Filter size={13} />
+          <span className="text-xs md:text-sm font-heading font-black uppercase tracking-wider text-pg-fg mr-2 flex items-center gap-1.5">
+            <Filter size={14} strokeWidth={2.5} />
             <span>Repository:</span>
           </span>
           {repos.map((repo) => (
@@ -168,10 +159,10 @@ export default function Home() {
               type="button"
               onClick={() => setSelectedRepo(repo)}
               className={`
-                px-5 py-2 rounded-full text-xs font-semibold transition-all duration-300 active:scale-95 focus-visible:ring-2 focus-visible:ring-md-primary/30 focus-visible:ring-offset-2
+                px-5 py-2.5 rounded-full text-xs font-black border-2 border-pg-fg transition-all duration-300 active:translate-y-0.5 active:shadow-none
                 ${selectedRepo === repo 
-                  ? 'bg-md-primary text-md-on-primary shadow-sm' 
-                  : 'bg-md-surface-container hover:bg-md-primary/10 text-md-on-surface-variant'
+                  ? 'bg-pg-accent text-white shadow-hard translate-x-[-2px] translate-y-[-2px]' 
+                  : 'bg-white hover:bg-pg-muted text-pg-fg hover:translate-x-[-1px] hover:translate-y-[-1px] hover:shadow-[2px_2px_0px_0px_rgba(30,41,59,1)]'
                 }
               `}
             >
@@ -184,75 +175,75 @@ export default function Home() {
       {/* Code Results Section */}
       <div className="space-y-6 min-h-[300px]">
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center py-20 text-md-on-surface-variant animate-pulse">
-            <Loader2 size={36} className="text-md-primary animate-spin mb-4" />
-            <span className="text-sm font-semibold tracking-wide">Querying vector index & parsing relevance...</span>
+          <div className="flex flex-col items-center justify-center py-20 text-pg-fg">
+            <Loader2 size={36} className="text-pg-accent animate-spin mb-4" strokeWidth={3} />
+            <span className="text-sm font-black tracking-wide">Querying vector index & parsing relevance...</span>
           </div>
         ) : results.length > 0 ? (
-          <div className="space-y-6">
-            <h4 className="text-sm font-bold uppercase tracking-wider text-md-on-surface-variant/70 mb-2">
+          <div className="space-y-8">
+            <h4 className="text-xs md:text-sm font-heading font-black uppercase tracking-wider text-pg-fg/70 mb-2">
               Semantic Search Results ({results.length})
             </h4>
             
             {results.map((item) => (
               <div 
                 key={item.id} 
-                className="group bg-md-surface-container rounded-3xl p-6 shadow-md-elevation-1 hover:shadow-md-elevation-2 hover:scale-[1.01] active:scale-[0.99] transition-all duration-300 ease-[cubic-bezier(0.2,0,0,1)] border border-transparent hover:border-md-primary/10"
+                className="group bg-white border-4 border-pg-fg rounded-2xl p-6 shadow-hard hover:shadow-hard-hover hover:-translate-x-[4px] hover:-translate-y-[4px] active:translate-x-[2px] active:translate-y-[2px] active:shadow-hard-active transition-all duration-300 ease-bounce-pop"
               >
                 {/* Result header */}
                 <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
                   <div className="flex items-center gap-3">
-                    <div className="bg-md-primary/10 text-md-primary p-2 rounded-xl">
-                      <Code size={18} />
+                    <div className="bg-pg-mint text-pg-fg p-2.5 rounded-full border-2 border-pg-fg shadow-hard transition-transform duration-300 group-hover:rotate-6">
+                      <Code size={18} strokeWidth={2.5} />
                     </div>
                     <div>
-                      <span className="text-sm font-bold text-md-on-background hover:underline cursor-pointer">
+                      <span className="text-sm md:text-base font-black text-pg-fg hover:underline cursor-pointer block">
                         {item.file}
                       </span>
                       <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-xs font-semibold text-md-on-surface-variant/70">{item.repo}</span>
-                        <span className="text-xs text-md-on-surface-variant/40">•</span>
-                        <span className="text-xs font-semibold text-md-primary">{item.language}</span>
+                        <span className="text-xs font-bold text-pg-fg/70">{item.repo}</span>
+                        <span className="text-xs text-pg-fg/40">•</span>
+                        <span className="text-xs font-black text-pg-accent bg-pg-accent/10 border border-pg-accent/30 rounded-full px-2 py-0.5 select-none">{item.language}</span>
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="bg-md-secondary-container text-md-on-secondary-container text-xs px-3.5 py-1.5 rounded-full font-bold shadow-sm select-none">
+                    <span className="bg-pg-secondary text-pg-fg border-2 border-pg-fg px-4 py-1.5 rounded-full font-black text-xs shadow-hard select-none">
                       {item.match}
                     </span>
                   </div>
                 </div>
 
                 {/* Description */}
-                <p className="text-sm text-md-on-surface-variant/90 leading-relaxed mb-4">
+                <p className="text-sm md:text-base font-bold text-pg-fg/90 leading-relaxed mb-4">
                   {item.description}
                 </p>
 
                 {/* Code Snippet Box */}
-                <div className="relative rounded-2xl bg-md-surface-container-low border border-md-outline/10 p-4 font-mono text-xs overflow-x-auto text-md-on-background/90 max-h-48 shadow-inner select-all">
-                  <pre>{item.snippet}</pre>
+                <div className="relative rounded-xl bg-pg-muted border-2 border-pg-fg p-4 font-mono text-xs overflow-x-auto text-pg-fg shadow-inner select-all">
+                  <pre className="whitespace-pre">{item.snippet}</pre>
                   
                   {/* Subtle terminal-like code layout details */}
-                  <div className="absolute top-2.5 right-3 flex items-center gap-1.5 text-[10px] text-md-on-surface-variant/50 font-sans pointer-events-none select-none">
-                    <Terminal size={11} />
-                    <span>Copyable snippet</span>
+                  <div className="absolute top-2.5 right-3 flex items-center gap-1.5 text-[10px] text-pg-fg/50 font-sans pointer-events-none select-none font-bold">
+                    <Terminal size={11} strokeWidth={2.5} />
+                    <span>Snippet</span>
                   </div>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center py-20 bg-md-surface-container/30 border border-dashed border-md-outline/30 rounded-3xl text-center p-8 select-none">
-            <div className="bg-md-surface-container p-4 rounded-full text-md-on-surface-variant/50 shadow-sm mb-4">
-              <Search size={28} />
+          <div className="flex flex-col items-center justify-center py-20 bg-white border-4 border-pg-fg rounded-2xl text-center p-8 select-none shadow-hard">
+            <div className="bg-pg-muted border-2 border-pg-fg p-4 rounded-full text-pg-fg shadow-sm mb-4">
+              <Search size={28} strokeWidth={2.5} />
             </div>
-            <h5 className="text-lg font-semibold text-md-on-background">No matching snippets found</h5>
-            <p className="text-sm text-md-on-surface-variant/70 max-w-sm mt-1">
-              We couldn't find matches for <span className="font-semibold text-md-primary">"{searchQuery}"</span>. Try adjusting your query keywords or changing repo filter tags.
+            <h5 className="text-xl font-heading font-black text-pg-fg">No matching snippets found</h5>
+            <p className="text-sm md:text-base font-bold text-pg-fg/70 max-w-sm mt-1">
+              We couldn't find matches for <span className="font-extrabold text-pg-accent">"{searchQuery}"</span>. Try adjusting your query keywords or changing repo filter tags.
             </p>
             <button 
               onClick={() => { setSearchQuery(""); setSelectedRepo("All"); }}
-              className="mt-6 px-6 py-2.5 bg-md-surface-container text-md-primary hover:bg-md-primary/10 rounded-full font-semibold text-xs transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md-primary focus-visible:ring-offset-2 focus-visible:ring-offset-md-background"
+              className="mt-6 px-6 py-3 bg-pg-tertiary text-pg-fg border-2 border-pg-fg hover:bg-pg-tertiary/95 rounded-full font-black text-xs shadow-hard active:translate-y-0.5 active:shadow-none transition-all duration-300"
             >
               Reset Search Filter
             </button>
@@ -260,17 +251,17 @@ export default function Home() {
         )}
       </div>
 
-      {/* Floating Action Button (FAB) at bottom-right of page layout context to show standard compliance */}
+      {/* Floating Action Button (FAB) in Playful Geometric layout */}
       <div className="fixed bottom-6 right-6 z-30 md:bottom-8 md:right-8">
         <button 
           onClick={() => {
-            alert("This FAB opens a semantic AI assistant chat. Implementation compliant with Material 3 floating actions.");
+            alert("This opens the CodeIntel Assistant. Theme compliant with Playful Geometric neo-brutalism guidelines.");
           }}
-          className="flex h-14 w-14 items-center justify-center rounded-2xl bg-md-tertiary text-white shadow-md hover:shadow-lg hover:bg-md-tertiary/90 hover:scale-105 active:scale-95 transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md-primary focus-visible:ring-offset-2 focus-visible:ring-offset-md-background"
+          className="flex h-14 w-14 items-center justify-center rounded-2xl bg-pg-tertiary text-pg-fg border-4 border-pg-fg shadow-hard hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-hard-hover active:translate-x-[2px] active:translate-y-[2px] active:shadow-hard-active transition-all duration-300 focus:outline-none"
           title="Open AI Chat Assistant"
           aria-label="Open AI Chat Assistant"
         >
-          <Sparkles size={24} />
+          <Sparkles size={24} strokeWidth={2.5} />
         </button>
       </div>
     </DashboardShell>

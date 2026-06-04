@@ -9,40 +9,29 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        md: {
-          background: "#FFFBFE",
-          "on-background": "#1C1B1F",
-          primary: "#6750A4",
-          "on-primary": "#FFFFFF",
-          "secondary-container": "#E8DEF8",
-          "on-secondary-container": "#1D192B",
-          tertiary: "#7D5260",
-          "surface-container": "#F3EDF7",
-          "surface-container-low": "#E7E0EC",
-          outline: "#79747E",
-          "on-surface-variant": "#49454F",
+        pg: {
+          bg: "#FFFDF5",
+          fg: "#1E293B",
+          accent: "#8B5CF6",
+          secondary: "#F472B6",
+          tertiary: "#FBBF24",
+          mint: "#34D399",
+          muted: "#F1F5F9",
         }
       },
-      borderRadius: {
-        'md-xs': '8px',
-        'md-sm': '12px',
-        'md-md': '16px',
-        'md-lg': '24px',
-        'md-xl': '28px',
-        'md-xxl': '32px',
-        'md-xxxl': '48px',
-      },
       transitionTimingFunction: {
-        'md-emphasized': 'cubic-bezier(0.2, 0, 0, 1)',
+        'bounce-pop': 'cubic-bezier(0.34, 1.56, 0.64, 1)',
       },
       boxShadow: {
-        'md-elevation-1': '0px 1px 3px 1px rgba(0, 0, 0, 0.08), 0px 1px 2px 0px rgba(0, 0, 0, 0.04)',
-        'md-elevation-2': '0px 2px 6px 2px rgba(0, 0, 0, 0.08), 0px 1px 2px 0px rgba(0, 0, 0, 0.04)',
-        'md-elevation-3': '0px 4px 12px 3px rgba(0, 0, 0, 0.12), 0px 2px 6px 0px rgba(0, 0, 0, 0.06)',
+        'hard': '4px 4px 0px 0px #1E293B',
+        'hard-hover': '6px 6px 0px 0px #1E293B',
+        'hard-active': '2px 2px 0px 0px #1E293B',
+        'sticker': '8px 8px 0px 0px #E2E8F0',
+        'sticker-pink': '8px 8px 0px 0px #F472B6',
       },
       fontFamily: {
-        heading: ['var(--font-roboto)', 'system-ui', 'sans-serif'],
-        sans: ['var(--font-roboto)', 'system-ui', 'sans-serif'],
+        heading: ['var(--font-outfit)', 'system-ui', 'sans-serif'],
+        sans: ['var(--font-jakarta)', 'system-ui', 'sans-serif'],
       }
     },
   },

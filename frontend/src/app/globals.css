@@ -1,49 +1,42 @@
 @import "tailwindcss";
 
 @theme {
-  --color-md-background: #FFFBFE;
-  --color-md-on-background: #1C1B1F;
-  --color-md-primary: #6750A4;
-  --color-md-on-primary: #FFFFFF;
-  --color-md-secondary-container: #E8DEF8;
-  --color-md-on-secondary-container: #1D192B;
-  --color-md-tertiary: #7D5260;
-  --color-md-surface-container: #F3EDF7;
-  --color-md-surface-container-low: #E7E0EC;
-  --color-md-outline: #79747E;
-  --color-md-on-surface-variant: #49454F;
+  --color-pg-bg: #FFFDF5;
+  --color-pg-fg: #1E293B;
+  --color-pg-accent: #8B5CF6;
+  --color-pg-secondary: #F472B6;
+  --color-pg-tertiary: #FBBF24;
+  --color-pg-mint: #34D399;
+  --color-pg-muted: #F1F5F9;
 
-  --radius-md-xs: 8px;
-  --radius-md-sm: 12px;
-  --radius-md-md: 16px;
-  --radius-md-lg: 24px;
-  --radius-md-xl: 28px;
-  --radius-md-xxl: 32px;
-  --radius-md-xxxl: 48px;
+  --font-sans: var(--font-jakarta), system-ui, sans-serif;
+  --font-heading: var(--font-outfit), system-ui, sans-serif;
 
-  --shadow-md-elevation-1: 0px 1px 3px 1px rgba(0, 0, 0, 0.08), 0px 1px 2px 0px rgba(0, 0, 0, 0.04);
-  --shadow-md-elevation-2: 0px 2px 6px 2px rgba(0, 0, 0, 0.08), 0px 1px 2px 0px rgba(0, 0, 0, 0.04);
-  --shadow-md-elevation-3: 0px 4px 12px 3px rgba(0, 0, 0, 0.12), 0px 2px 6px 0px rgba(0, 0, 0, 0.06);
+  --ease-bounce-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
 
-  --font-sans: var(--font-roboto), system-ui, sans-serif;
-  --font-heading: var(--font-roboto), system-ui, sans-serif;
+  --shadow-hard: 4px 4px 0px 0px #1E293B;
+  --shadow-hard-hover: 6px 6px 0px 0px #1E293B;
+  --shadow-hard-active: 2px 2px 0px 0px #1E293B;
+  --shadow-sticker: 8px 8px 0px 0px #E2E8F0;
+  --shadow-sticker-pink: 8px 8px 0px 0px #F472B6;
 }
 
 @layer base {
   * {
     transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
-    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+    transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
     transition-duration: 300ms;
   }
 }
 
-/* Material You Easing & State Transition Utilities */
-.transition-md {
-  transition: all 300ms cubic-bezier(0.2, 0, 0, 1);
+/* Playful Geometric dot-grid background utility class */
+.bg-dot-grid {
+  background-image: radial-gradient(#e2e8f0 2px, transparent 2px);
+  background-size: 24px 24px;
 }
 
-.transition-fast {
-  transition: all 200ms cubic-bezier(0.2, 0, 0, 1);
+.transition-bounce {
+  transition: all 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* For users with vestibular disorders or motion sensitivity */

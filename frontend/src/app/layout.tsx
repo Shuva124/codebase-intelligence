@@ -1,11 +1,15 @@
 import type { Metadata } from "next";
-import { Roboto } from "next/font/google";
+import { Outfit, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
-const roboto = Roboto({ 
-  weight: ["400", "500", "700"],
+const outfit = Outfit({ 
   subsets: ["latin"],
-  variable: '--font-roboto',
+  variable: '--font-outfit',
+});
+
+const jakarta = Plus_Jakarta_Sans({ 
+  subsets: ["latin"],
+  variable: '--font-jakarta',
 });
 
 export const metadata: Metadata = {
@@ -20,7 +24,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${roboto.variable} font-sans antialiased bg-md-background text-md-on-background`}>
+      <body className={`${jakarta.variable} ${outfit.variable} font-sans antialiased bg-pg-bg text-pg-fg`}>
         {children}
       </body>
     </html>
