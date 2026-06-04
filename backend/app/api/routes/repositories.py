@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks # Add BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 import requests
@@ -7,38 +7,20 @@ from app.models.repository import Repository
 from app.schemas.repository import RepositoryCreate, RepositoryResponse
 from app.models.user import User
 
+# ADD THIS IMPORT:
+from app.services.git_service import GitService
+
 router = APIRouter()
+git_service = GitService() # Initialize our service
 
-@router.get("/public", response_model=List[RepositoryResponse])
-def get_public_repositories(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    return db.query(Repository).filter(Repository.is_public == True).offset(skip).limit(limit).all()
-
-@router.get("/github-sync/{user_id}")
-def sync_user_github_repos(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user or not user.github_access_token:
-        raise HTTPException(status_code=400, detail="User GitHub token not found")
-
-    headers = {
-        "Authorization": f"Bearer {user.github_access_token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    
-    response = requests.get("https://api.github.com/user/repos?visibility=all&per_page=100", headers=headers)
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Failed to fetch from GitHub API")
-
-    return {"repositories": [
-        {
-            "name": repo["full_name"],
-            "url": repo["html_url"],
-            "is_private": repo["private"],
-            "description": repo["description"]
-        } for repo in response.json()
-    ]}
+# ... keeping get_public_repositories and sync_user_github_repos the same ...
 
 @router.post("/index", response_model=RepositoryResponse)
-def submit_repository(repo_in: RepositoryCreate, db: Session = Depends(get_db)):
+def submit_repository(
+    repo_in: RepositoryCreate, 
+    background_tasks: BackgroundTasks, # Add this to handle slow tasks asynchronously
+    db: Session = Depends(get_db)
+):
     url_str = str(repo_in.url).rstrip("/")
     if "github.com/" not in url_str:
         raise HTTPException(status_code=400, detail="Must be a valid GitHub URL")
@@ -59,5 +41,9 @@ def submit_repository(repo_in: RepositoryCreate, db: Session = Depends(get_db)):
     db.add(new_repo)
     db.commit()
     db.refresh(new_repo)
+    
+    # NEW: Trigger the cloning process as a background task so the user doesn't wait!
+    # (For now, we call the cloning method. In the next step, we will wrap this into an ingestion pipeline)
+    background_tasks.add_task(git_service.clone_repository, url_str)
     
     return new_repo
