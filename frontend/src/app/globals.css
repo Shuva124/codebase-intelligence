@@ -1,26 +1,58 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-md-background: #FFFBFE;
+  --color-md-on-background: #1C1B1F;
+  --color-md-primary: #6750A4;
+  --color-md-on-primary: #FFFFFF;
+  --color-md-secondary-container: #E8DEF8;
+  --color-md-on-secondary-container: #1D192B;
+  --color-md-tertiary: #7D5260;
+  --color-md-surface-container: #F3EDF7;
+  --color-md-surface-container-low: #E7E0EC;
+  --color-md-outline: #79747E;
+  --color-md-on-surface-variant: #49454F;
+
+  --radius-md-xs: 8px;
+  --radius-md-sm: 12px;
+  --radius-md-md: 16px;
+  --radius-md-lg: 24px;
+  --radius-md-xl: 28px;
+  --radius-md-xxl: 32px;
+  --radius-md-xxxl: 48px;
+
+  --shadow-md-elevation-1: 0px 1px 3px 1px rgba(0, 0, 0, 0.08), 0px 1px 2px 0px rgba(0, 0, 0, 0.04);
+  --shadow-md-elevation-2: 0px 2px 6px 2px rgba(0, 0, 0, 0.08), 0px 1px 2px 0px rgba(0, 0, 0, 0.04);
+  --shadow-md-elevation-3: 0px 4px 12px 3px rgba(0, 0, 0, 0.12), 0px 2px 6px 0px rgba(0, 0, 0, 0.06);
+
+  --font-sans: var(--font-roboto), system-ui, sans-serif;
+  --font-heading: var(--font-roboto), system-ui, sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+    transition-duration: 300ms;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Material You Easing & State Transition Utilities */
+.transition-md {
+  transition: all 300ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.transition-fast {
+  transition: all 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* For users with vestibular disorders or motion sensitivity */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-delay: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
 }
