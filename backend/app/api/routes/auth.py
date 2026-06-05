@@ -7,8 +7,10 @@ from app.models.user import User
 from app.schemas.user import UserOAuthSync, UserResponse
 from app.core.config import settings
 from app.core.security import create_access_token
+from app.api.deps import get_current_user
 
 router = APIRouter()
+
 
 @router.post("/sync", response_model=UserResponse)
 def sync_oauth_user(user_in: UserOAuthSync, db: Session = Depends(get_db)):
@@ -20,6 +22,8 @@ def sync_oauth_user(user_in: UserOAuthSync, db: Session = Depends(get_db)):
     if not user:
         user = User(
             email=user_in.email,
+            username=user_in.username,
+            name=user_in.name,
             provider=user_in.provider,
             provider_id=user_in.provider_id,
             avatar_url=user_in.avatar_url,
@@ -31,6 +35,9 @@ def sync_oauth_user(user_in: UserOAuthSync, db: Session = Depends(get_db)):
     else:
         # Update token if synced again
         user.github_access_token = user_in.github_access_token
+        user.avatar_url = user_in.avatar_url
+        user.username = user_in.username
+        user.name = user_in.name
         db.commit()
         db.refresh(user)
         
@@ -69,6 +76,8 @@ async def callback_github(code: str, db: Session = Depends(get_db)):
         if not user:
             user = User(
                 email=mock_email,
+                username="demo-developer",
+                name="Demo Developer",
                 provider="github",
                 provider_id=mock_provider_id,
                 avatar_url="https://avatars.githubusercontent.com/u/9919?v=4",
@@ -137,12 +146,16 @@ async def callback_github(code: str, db: Session = Depends(get_db)):
 
         provider_id = str(user_data.get("id"))
         avatar_url = user_data.get("avatar_url")
+        username = user_data.get("login")
+        name = user_data.get("name")
 
         # Create or update SQL user record
         user = db.query(User).filter(User.provider_id == provider_id).first()
         if not user:
             user = User(
                 email=email,
+                username=username,
+                name=name,
                 provider="github",
                 provider_id=provider_id,
                 avatar_url=avatar_url,
@@ -154,9 +167,18 @@ async def callback_github(code: str, db: Session = Depends(get_db)):
         else:
             user.github_access_token = access_token
             user.avatar_url = avatar_url
+            user.username = username
+            user.name = name
             db.commit()
             db.refresh(user)
 
     # 3. Issue Platform JWT & Redirect to Frontend
     token = create_access_token(subject=str(user.id))
     return RedirectResponse(url=f"http://localhost:3000/auth/callback?token={token}")
+
+@router.get("/me", response_model=UserResponse)
+def get_current_user_profile(current_user: User = Depends(get_current_user)):
+    """
+    Returns the currently logged in user profile.
+    """
+    return current_user

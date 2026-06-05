@@ -7,6 +7,8 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
+    username = Column(String, index=True, nullable=True)
+    name = Column(String, nullable=True)
     
     provider = Column(String, default="github")
     provider_id = Column(String, unique=True, index=True, nullable=False)
