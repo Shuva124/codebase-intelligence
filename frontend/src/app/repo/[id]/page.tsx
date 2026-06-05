@@ -15,7 +15,7 @@ import '@xyflow/react/dist/style.css';
 import { 
   Sparkles, Send, Loader2, Code, ArrowLeft, RefreshCw, 
   BookOpen, Terminal, CheckCircle2, AlertCircle, FileText,
-  User, Calendar, ShieldAlert, Info, ZoomIn, Search, Check, Layers, ChevronRight, X
+  User, Calendar, ShieldAlert, Info, ZoomIn, Search, Check, Layers, ChevronRight, X, Minimize2
 } from "lucide-react";
 
 // Custom node styling to match the Playful Geometric theme
@@ -102,27 +102,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
   const [isScanningDuplicates, setIsScanningDuplicates] = useState(false);
   const [duplicateScanResults, setDuplicateScanResults] = useState<any[]>([]);
 
-  // Panning zoom ref listeners
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
 
-    const handleNativeWheel = (e: WheelEvent) => {
-      if (e.ctrlKey) {
-        e.preventDefault();
-        if (e.deltaY < 0) {
-          zoomIn({ duration: 250 });
-        } else {
-          zoomOut({ duration: 250 });
-        }
-      }
-    };
-
-    container.addEventListener('wheel', handleNativeWheel, { passive: false });
-    return () => {
-      container.removeEventListener('wheel', handleNativeWheel);
-    };
-  }, [zoomIn, zoomOut, activeTab, isFullscreenGraph]);
 
   // Escape key global listener for fullscreen / code drawer closing
   useEffect(() => {
@@ -140,6 +120,21 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFullscreenGraph, isFullscreenChat, activeSnippet]);
+
+  // Automatically fit view when graph is loaded, tab changes, or when fullscreen toggles
+  useEffect(() => {
+    if (!isLoadingGraph && activeTab === 'graph') {
+      const timer = setTimeout(() => {
+        try {
+          fitView({ padding: 0.2, duration: 400 });
+        } catch (error) {
+          console.error("Failed to fit view:", error);
+        }
+      }, 150); // Small delay to let container resize settle in DOM
+      return () => clearTimeout(timer);
+    }
+  }, [isFullscreenGraph, isLoadingGraph, activeTab, fitView]);
+
 
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
@@ -665,168 +660,201 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
   }
 
   return (
-    <DashboardShell>
+    <DashboardShell hideHeader={isFullscreenGraph || isFullscreenChat}>
       
       {/* Upper Navigation Row */}
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6 select-none">
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={() => router.push("/")}
-            className="flex items-center gap-2 bg-white border-2 border-pg-fg px-4 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200"
-          >
-            <ArrowLeft size={14} strokeWidth={3} />
-            <span>Back to Repositories</span>
-          </button>
+      {!(isFullscreenGraph || isFullscreenChat) && (
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-6 select-none">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => router.push("/")}
+              className="flex items-center gap-2 bg-white border-2 border-pg-fg px-4 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200"
+            >
+              <ArrowLeft size={14} strokeWidth={3} />
+              <span>Back to Repositories</span>
+            </button>
 
-          <button 
-            onClick={async () => {
-              if (confirm("Are you sure you want to re-index this repository? This will redirect you to the dashboard while processing.")) {
-                try {
-                  await axios.post(`http://localhost:8000/api/v1/repositories/${repoId}/reindex`, {}, {
-                    headers: { Authorization: `Bearer ${token}` }
-                  });
-                  router.push("/");
-                } catch (err) {
-                  console.error("Failed to re-index repository:", err);
-                  alert("Failed to trigger re-indexing. Please try again.");
+            <button 
+              onClick={async () => {
+                if (confirm("Are you sure you want to re-index this repository? This will redirect you to the dashboard while processing.")) {
+                  try {
+                    await axios.post(`http://localhost:8000/api/v1/repositories/${repoId}/reindex`, {}, {
+                      headers: { Authorization: `Bearer ${token}` }
+                    });
+                    router.push("/");
+                  } catch (err) {
+                    console.error("Failed to re-index repository:", err);
+                    alert("Failed to trigger re-indexing. Please try again.");
+                  }
                 }
-              }
-            }}
-            className="flex items-center gap-2 bg-pg-mint text-pg-fg border-2 border-pg-fg px-4 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200"
-          >
-            <RefreshCw size={14} strokeWidth={3} />
-            <span>Re-index Repository</span>
-          </button>
-        </div>
-
-        <div className="bg-pg-muted border-2 border-pg-fg rounded-full px-5 py-2 text-xs font-black text-pg-fg flex items-center gap-2">
-          <Code size={14} strokeWidth={2.5} />
-          <span className="truncate max-w-xs">{repoName}</span>
-        </div>
-      </div>
-
-      {/* Main Panel - Grid Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start relative">
-        
-        {/* Navigation Sidebar Tabs (3 Columns) */}
-        <div className="lg:col-span-3 flex flex-col gap-4 select-none">
-          <div className="bg-white border-4 border-pg-fg p-5 rounded-2xl shadow-hard">
-            <h4 className="text-xs font-heading font-black uppercase text-pg-fg/60 tracking-wider mb-3">
-              Workspace Modules
-            </h4>
-            
-            <nav className="flex flex-col gap-2.5">
-              <button
-                onClick={() => setActiveTab('chat')}
-                className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
-                  ${activeTab === 'chat' ? 'bg-pg-accent text-white' : 'bg-white text-pg-fg'}
-                `}
-              >
-                <Sparkles size={16} />
-                <span>AI RAG Assistant</span>
-              </button>
-              
-              <button
-                onClick={() => setActiveTab('graph')}
-                className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
-                  ${activeTab === 'graph' ? 'bg-pg-mint text-pg-fg' : 'bg-white text-pg-fg'}
-                `}
-              >
-                <Layers size={16} />
-                <span>Dependency Graph</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('analytics')}
-                className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
-                  ${activeTab === 'analytics' ? 'bg-pg-tertiary text-pg-fg' : 'bg-white text-pg-fg'}
-                `}
-              >
-                <Calendar size={16} />
-                <span>Repo Analytics</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('audit')}
-                className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
-                  ${activeTab === 'audit' ? 'bg-pg-secondary text-pg-fg' : 'bg-white text-pg-fg'}
-                `}
-              >
-                <ShieldAlert size={16} />
-                <span>Security & Code Audit</span>
-              </button>
-            </nav>
+              }}
+              className="flex items-center gap-2 bg-pg-mint text-pg-fg border-2 border-pg-fg px-4 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200"
+            >
+              <RefreshCw size={14} strokeWidth={3} />
+              <span>Re-index Repository</span>
+            </button>
           </div>
 
-          {/* Quick-Prompt Help Deck */}
-          {activeTab === 'chat' && (
-            <div className="bg-white border-4 border-pg-fg p-5 rounded-2xl shadow-hard">
-              <h5 className="text-[10px] font-heading font-black uppercase text-pg-fg/50 tracking-wider mb-2">
-                Quick Questions
-              </h5>
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={() => setChatInput("Explain how JWT token authentication and security works in this project.")}
-                  className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
-                >
-                  * How does JWT token auth work?
-                </button>
-                <button
-                  onClick={() => setChatInput("Onboarding checklist: explain project directories and how to contribute.")}
-                  className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
-                >
-                  * Setup local dev setup & directories?
-                </button>
-                <button
-                  onClick={() => setChatInput("Who is the main contributor author and code owner here?")}
-                  className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
-                >
-                  * Who owns authentication code files?
-                </button>
-                <button
-                  onClick={() => setChatInput("Impact Analysis: What breaks if I modify AuthService?")}
-                  className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
-                >
-                  * What breaks if I modify AuthService?
-                </button>
-              </div>
-            </div>
-          )}
+          <div className="bg-pg-muted border-2 border-pg-fg rounded-full px-5 py-2 text-xs font-black text-pg-fg flex items-center gap-2">
+            <Code size={14} strokeWidth={2.5} />
+            <span className="truncate max-w-xs">{repoName}</span>
+          </div>
         </div>
+      )}
 
-        {/* Dynamic Display Panel (9 Columns) */}
-        <div className="lg:col-span-9">
+      {/* Main Panel - Grid Layout */}
+      <div className={
+        isFullscreenGraph 
+          ? "w-full h-full" 
+          : "grid grid-cols-1 lg:grid-cols-12 gap-8 items-start relative"
+      }>
+        
+        {/* Navigation Sidebar Tabs (3 Columns) */}
+        {!isFullscreenGraph && (
+          <div className="lg:col-span-3 flex flex-col gap-4 select-none">
+            <div className="bg-white border-4 border-pg-fg p-5 rounded-2xl shadow-hard">
+              <h4 className="text-xs font-heading font-black uppercase text-pg-fg/60 tracking-wider mb-3">
+                Workspace Modules
+              </h4>
+              
+              <nav className="flex flex-col gap-2.5">
+                <button
+                  onClick={() => setActiveTab('chat')}
+                  className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
+                    ${activeTab === 'chat' ? 'bg-pg-accent text-white' : 'bg-white text-pg-fg'}
+                  `}
+                >
+                  <Sparkles size={16} />
+                  <span>AI RAG Assistant</span>
+                </button>
+                
+                <button
+                  onClick={() => setActiveTab('graph')}
+                  className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
+                    ${activeTab === 'graph' ? 'bg-pg-mint text-pg-fg' : 'bg-white text-pg-fg'}
+                  `}
+                >
+                  <Layers size={16} />
+                  <span>Dependency Graph</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('analytics')}
+                  className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
+                    ${activeTab === 'analytics' ? 'bg-pg-tertiary text-pg-fg' : 'bg-white text-pg-fg'}
+                  `}
+                >
+                  <Calendar size={16} />
+                  <span>Repo Analytics</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('audit')}
+                  className={`w-full text-left px-4 py-3 rounded-xl border-2 border-pg-fg font-black text-xs shadow-hard flex items-center gap-3 transition-transform hover:-translate-y-0.5 active:translate-y-0.5
+                    ${activeTab === 'audit' ? 'bg-pg-secondary text-pg-fg' : 'bg-white text-pg-fg'}
+                  `}
+                >
+                  <ShieldAlert size={16} />
+                  <span>Security & Code Audit</span>
+                </button>
+              </nav>
+            </div>
+
+            {/* Quick-Prompt Help Deck */}
+            {activeTab === 'chat' && (
+              <div className="bg-white border-4 border-pg-fg p-5 rounded-2xl shadow-hard">
+                <h5 className="text-[10px] font-heading font-black uppercase text-pg-fg/50 tracking-wider mb-2">
+                  Quick Questions
+                </h5>
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={() => setChatInput("Explain how JWT token authentication and security works in this project.")}
+                    className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
+                  >
+                    * How does JWT token auth work?
+                  </button>
+                  <button
+                    onClick={() => setChatInput("Onboarding checklist: explain project directories and how to contribute.")}
+                    className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
+                  >
+                    * Setup local dev setup & directories?
+                  </button>
+                  <button
+                    onClick={() => setChatInput("Who is the main contributor author and code owner here?")}
+                    className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
+                  >
+                    * Who owns authentication code files?
+                  </button>
+                  <button
+                    onClick={() => setChatInput("Impact Analysis: What breaks if I modify AuthService?")}
+                    className="w-full text-left text-[11px] font-bold text-pg-fg/75 hover:text-pg-accent hover:underline leading-snug"
+                  >
+                    * What breaks if I modify AuthService?
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Dynamic Display Panel (9 Columns or Full Width) */}
+        <div className={
+          isFullscreenGraph 
+            ? "w-full h-full" 
+            : "lg:col-span-9"
+        }>
 
           {/* 1. TAB: AI RAG CHAT */}
           {activeTab === 'chat' && !isFullscreenChat && renderChatContent(false)}
 
           {/* 2. TAB: TOPOLOGY GRAPH */}
           {activeTab === 'graph' && (
-            <div className="border-4 border-pg-fg rounded-[32px] bg-white shadow-hard h-[calc(100vh-14rem)] min-h-[500px] overflow-hidden flex flex-col relative select-none">
+            <div className={
+              isFullscreenGraph 
+                ? "absolute inset-0 z-50 bg-pg-bg flex flex-col w-full h-full select-none no-transition pointer-events-auto"
+                : "border-4 border-pg-fg rounded-[32px] bg-white shadow-hard h-[calc(100vh-14rem)] min-h-[500px] overflow-hidden flex flex-col relative select-none"
+            }>
               
               {/* Header */}
-              <div className="bg-pg-muted border-b-4 border-pg-fg px-6 py-4 flex items-center justify-between shadow-sm z-10">
-                <span className="font-heading font-black text-sm flex items-center gap-2">
-                  <Layers size={16} />
-                  Dependency Topology Canvas
-                </span>
-                <button
-                  onClick={() => setIsFullscreenGraph(true)}
-                  className="bg-white text-pg-fg border-2 border-pg-fg px-3 py-1 rounded-full font-black text-[10px] shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5"
-                >
-                  Fullscreen Graph View
-                </button>
-              </div>
+              {isFullscreenGraph ? (
+                <div className="bg-white border-b-4 border-pg-fg px-6 py-4 flex items-center justify-between z-30 shadow-sm pointer-events-auto">
+                  <div className="bg-pg-muted border-2 border-pg-fg rounded-full px-5 py-2 text-xs font-black text-pg-fg flex items-center gap-2">
+                    <Code size={14} strokeWidth={2.5} />
+                    <span className="truncate max-w-xs">{repoName} - Topology</span>
+                  </div>
+                  
+                  <button
+                    onClick={() => setIsFullscreenGraph(false)}
+                    className="bg-pg-secondary text-pg-fg border-2 border-pg-fg px-5 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200 cursor-pointer pointer-events-auto z-40 flex items-center gap-1.5"
+                  >
+                    <Minimize2 size={14} strokeWidth={2.5} />
+                    Minimize Screen (Esc)
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-pg-muted border-b-4 border-pg-fg px-6 py-4 flex items-center justify-between shadow-sm z-10">
+                  <span className="font-heading font-black text-sm flex items-center gap-2">
+                    <Layers size={16} />
+                    Dependency Topology Canvas
+                  </span>
+                  <button
+                    onClick={() => setIsFullscreenGraph(true)}
+                    className="bg-white text-pg-fg border-2 border-pg-fg px-3 py-1 rounded-full font-black text-[10px] shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5"
+                  >
+                    Fullscreen Graph View
+                  </button>
+                </div>
+              )}
 
-              {/* Small/Embedded Graph Render */}
-              <div ref={containerRef} className="flex-1 relative bg-pg-bg">
+              {/* Graph canvas */}
+              <div ref={containerRef} className="flex-1 w-full bg-pg-bg relative pointer-events-auto">
                 {isLoadingGraph ? (
                   <div className="flex flex-col items-center justify-center h-full text-pg-fg animate-pulse">
                     <RefreshCw className="animate-spin text-pg-accent mb-2" size={24} />
-                    <span className="text-xs font-black">Drawing relationships...</span>
+                    <span className="text-xs font-black">Parsing references...</span>
                   </div>
                 ) : nodes.length > 0 ? (
-                  <div className="absolute inset-0">
+                  <div className="absolute inset-0 z-0">
                     <ReactFlow
                       nodes={styledNodes}
                       edges={styledEdges}
@@ -841,21 +869,57 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
                       maxZoom={4.0}
                       panOnScroll={true}
                       panOnScrollMode={PanOnScrollMode.Free}
-                      zoomOnScroll={false}
-                      zoomOnPinch={false}
+                      zoomOnScroll={true}
+                      zoomOnPinch={true}
                       panOnDrag={true}
                       preventScrolling={true}
                       zoomOnDoubleClick={true}
+                      zoomActivationKeyCode="Control"
                     >
                       <Background color="#cbd5e1" gap={24} size={2.5} />
-                      <Controls className="!border-4 !border-pg-fg !shadow-hard !rounded-xl overflow-hidden !bg-white" />
+                      {!isFullscreenGraph && (
+                        <Controls 
+                          showFitView={false} 
+                          showInteractive={false} 
+                          className="!border-4 !border-pg-fg !shadow-hard !rounded-xl overflow-hidden !bg-white" 
+                        />
+                      )}
                     </ReactFlow>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-pg-fg p-6 text-center">
+                  <div className="flex flex-col items-center justify-center h-full text-pg-fg p-6 text-center select-none z-0">
                     <BookOpen size={32} className="text-pg-fg/40 mb-3" />
-                    <h5 className="text-base font-black">No dependencies resolved</h5>
+                    <h5 className="text-base font-black">No file dependencies parsed</h5>
                   </div>
+                )}
+
+                {isFullscreenGraph && (
+                  <>
+                    {/* Custom Neo-Brutalist Zoom Controls */}
+                    <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-30 pointer-events-auto">
+                      <button
+                        onClick={() => zoomIn({ duration: 300 })}
+                        className="w-12 h-12 bg-white text-pg-fg border-4 border-pg-fg rounded-xl font-black text-xl shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 flex items-center justify-center cursor-pointer select-none pointer-events-auto"
+                        title="Zoom In"
+                      >
+                        +
+                      </button>
+                      <button
+                        onClick={() => zoomOut({ duration: 300 })}
+                        className="w-12 h-12 bg-white text-pg-fg border-4 border-pg-fg rounded-xl font-black text-xl shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 flex items-center justify-center cursor-pointer select-none pointer-events-auto"
+                        title="Zoom Out"
+                      >
+                        −
+                      </button>
+                      <button
+                        onClick={() => fitView({ duration: 800 })}
+                        className="bg-pg-mint text-pg-fg border-4 border-pg-fg px-4 py-2 rounded-xl font-black text-xs shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 flex items-center justify-center cursor-pointer select-none pointer-events-auto"
+                        title="Reset View"
+                      >
+                        Reset View
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1176,105 +1240,10 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
         </div>
       )}
 
-      {/* Fullscreen Overlay Dependency Graph Modal */}
-      {isFullscreenGraph && (
-        <div className="fixed inset-0 z-50 bg-pg-bg flex flex-col w-screen h-screen select-none animate-bounce-pop pointer-events-auto">
-          {/* Header row in full screen */}
-          <div className="bg-white border-b-4 border-pg-fg px-6 py-4 flex items-center justify-between z-30 shadow-sm pointer-events-auto">
-            <div className="bg-pg-muted border-2 border-pg-fg rounded-full px-5 py-2 text-xs font-black text-pg-fg flex items-center gap-2">
-              <Code size={14} strokeWidth={2.5} />
-              <span className="truncate max-w-xs">{repoName} - Topology</span>
-            </div>
-            
-            <button
-              onClick={() => setIsFullscreenGraph(false)}
-              className="bg-pg-secondary text-pg-fg border-2 border-pg-fg px-6 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200 cursor-pointer pointer-events-auto z-40"
-            >
-              Back to Workspace View (Esc)
-            </button>
-          </div>
-
-          {/* Graph canvas */}
-          <div ref={containerRef} className="flex-1 w-full bg-pg-bg relative pointer-events-auto">
-            {isLoadingGraph ? (
-              <div className="flex flex-col items-center justify-center h-full text-pg-fg animate-pulse">
-                <RefreshCw className="animate-spin text-pg-accent mb-2" size={24} />
-                <span className="text-xs font-black">Parsing references...</span>
-              </div>
-            ) : nodes.length > 0 ? (
-              <div className="absolute inset-0 z-0">
-                <ReactFlow
-                  nodes={styledNodes}
-                  edges={styledEdges}
-                  nodeTypes={nodeTypes}
-                  onNodesChange={onNodesChange}
-                  onEdgesChange={onEdgesChange}
-                  onNodeMouseEnter={(_, node) => setHoveredNodeId(node.id)}
-                  onNodeMouseLeave={() => setHoveredNodeId(null)}
-                  fitView
-                  fitViewOptions={{ padding: 0.2, duration: 800 }}
-                  minZoom={0.05}
-                  maxZoom={4.0}
-                  panOnScroll={true}
-                  panOnScrollMode={PanOnScrollMode.Free}
-                  zoomOnScroll={false}
-                  zoomOnPinch={false}
-                  panOnDrag={true}
-                  preventScrolling={true}
-                  zoomOnDoubleClick={true}
-                >
-                  <Background color="#cbd5e1" gap={24} size={2.5} />
-                </ReactFlow>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-pg-fg p-6 text-center select-none z-0">
-                <BookOpen size={32} className="text-pg-fg/40 mb-3" />
-                <h5 className="text-base font-black">No file dependencies parsed</h5>
-              </div>
-            )}
-
-            {/* Custom Neo-Brutalist Back to Workspace Floating Button */}
-            <div className="absolute bottom-6 left-6 z-30 pointer-events-auto">
-              <button
-                onClick={() => setIsFullscreenGraph(false)}
-                className="bg-pg-secondary text-pg-fg border-4 border-pg-fg px-6 py-3 rounded-2xl font-black text-sm shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 flex items-center gap-2 cursor-pointer select-none pointer-events-auto"
-                title="Get Back to Workspace"
-              >
-                <span>← Get Back to Workspace</span>
-              </button>
-            </div>
-
-            {/* Custom Neo-Brutalist Zoom Controls */}
-            <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-30 pointer-events-auto">
-              <button
-                onClick={() => zoomIn({ duration: 300 })}
-                className="w-12 h-12 bg-white text-pg-fg border-4 border-pg-fg rounded-xl font-black text-xl shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 flex items-center justify-center cursor-pointer select-none pointer-events-auto"
-                title="Zoom In"
-              >
-                +
-              </button>
-              <button
-                onClick={() => zoomOut({ duration: 300 })}
-                className="w-12 h-12 bg-white text-pg-fg border-4 border-pg-fg rounded-xl font-black text-xl shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 flex items-center justify-center cursor-pointer select-none pointer-events-auto"
-                title="Zoom Out"
-              >
-                −
-              </button>
-              <button
-                onClick={() => fitView({ duration: 800 })}
-                className="bg-pg-mint text-pg-fg border-4 border-pg-fg px-4 py-2 rounded-xl font-black text-xs shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 flex items-center justify-center cursor-pointer select-none pointer-events-auto"
-                title="Reset View"
-              >
-                Reset View
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Fullscreen Overlay Chat Modal */}
       {isFullscreenChat && (
-        <div className="fixed inset-0 z-50 bg-pg-bg flex flex-col w-screen h-screen select-none animate-bounce-pop pointer-events-auto">
+        <div className="absolute inset-0 z-50 bg-pg-bg flex flex-col w-full h-full select-none animate-bounce-pop pointer-events-auto">
           {/* Header row in full screen */}
           <div className="bg-white border-b-4 border-pg-fg px-6 py-4 flex items-center justify-between z-30 shadow-sm pointer-events-auto">
             <div className="bg-pg-muted border-2 border-pg-fg rounded-full px-5 py-2 text-xs font-black text-pg-fg flex items-center gap-2">
@@ -1284,9 +1253,10 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
             
             <button
               onClick={() => setIsFullscreenChat(false)}
-              className="bg-pg-secondary text-pg-fg border-2 border-pg-fg px-6 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200 cursor-pointer pointer-events-auto z-40"
+              className="bg-pg-secondary text-pg-fg border-2 border-pg-fg px-5 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200 cursor-pointer pointer-events-auto z-40 flex items-center gap-1.5"
             >
-              Back to Workspace View (Esc)
+              <Minimize2 size={14} strokeWidth={2.5} />
+              Minimize Screen (Esc)
             </button>
           </div>
 

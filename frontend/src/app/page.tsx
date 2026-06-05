@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import DashboardShell from "@/components/layout/DashboardShell";
 import axios from 'axios';
@@ -29,6 +29,13 @@ const GithubIcon = ({ size = 24, ...props }: GithubIconProps) => (
     <path d="M9 18c-4.51 2-5-2-7-2" />
   </svg>
 );
+
+const formatLastIndexed = (indexedAt?: string) => {
+  if (!indexedAt) return 'Never';
+  const hasTz = indexedAt.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(indexedAt);
+  const formattedStr = hasTz ? indexedAt : `${indexedAt}Z`;
+  return new Date(formattedStr).toLocaleString();
+};
 
 interface Repository {
   id: number;
@@ -59,48 +66,49 @@ export default function Home() {
     setToken(storedToken);
   }, []);
 
-  // Fetch repositories & continuous polling
+  // Define async fetch function wrapped in useCallback
+  const fetchRepos = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await axios.get("http://localhost:8000/api/v1/repositories/my", {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setRepos(response.data);
+      setIsLoadingRepos(false);
+    } catch (error: any) {
+      console.error("Failed to fetch repositories:", error);
+      setIsLoadingRepos(false);
+      if (error.response?.status === 401) {
+        localStorage.removeItem("token");
+        setToken(null);
+        router.push("/");
+      }
+    }
+  }, [token, router]);
+
+  // Initial fetch on mount or token change
+  useEffect(() => {
+    if (token) {
+      fetchRepos();
+    }
+  }, [token, fetchRepos]);
+
+  // Poll while there are active jobs (pending or indexing)
   useEffect(() => {
     if (!token) return;
 
-    // Define async fetch function and manage polling interval
-    let pollInterval: NodeJS.Timeout | null = null;
-    const fetchRepos = async () => {
-      try {
-        const response = await axios.get("http://localhost:8000/api/v1/repositories/my", {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        setRepos(response.data);
-        setIsLoadingRepos(false);
-        // Determine if any repo is still processing
-        const hasActiveJobs = response.data.some(
-          (repo: Repository) => repo.status === 'pending' || repo.status === 'indexing'
-        );
-        // If no active jobs, stop polling
-        if (!hasActiveJobs && pollInterval) {
-          clearInterval(pollInterval);
-          pollInterval = null;
-        }
-      } catch (error: any) {
-        console.error("Failed to fetch repositories:", error);
-        setIsLoadingRepos(false);
-        if (error.response?.status === 401) {
-          localStorage.removeItem("token");
-          setToken(null);
-          router.push("/");
-        }
-      }
-    };
+    const hasActiveJobs = repos.some(
+      (repo) => repo.status === 'pending' || repo.status === 'indexing'
+    );
 
-    // Initial fetch
-    fetchRepos();
-    // Start polling interval (will be cleared when no active jobs)
-    pollInterval = setInterval(fetchRepos, 3000);
-    // Cleanup on unmount
-    return () => {
-      if (pollInterval) clearInterval(pollInterval);
-    };
-  }, [token]);
+    if (!hasActiveJobs) return;
+
+    const interval = setInterval(() => {
+      fetchRepos();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [token, repos, fetchRepos]);
 
   const handleLogout = () => {
     localStorage.removeItem("token");
@@ -160,6 +168,7 @@ export default function Home() {
       
       setRepoUrl("");
       setSubmitSuccess(true);
+      fetchRepos();
     } catch (error: any) {
       if (error.response?.status === 401) {
         localStorage.removeItem("token");
@@ -379,6 +388,7 @@ export default function Home() {
                                 });
                                 // Locally update state to pending to show immediate loading
                                 setRepos(prev => prev.map(r => r.id === repo.id ? { ...r, status: 'pending' } : r));
+                                fetchRepos();
                               } catch (err) {
                                 console.error("Failed to re-index repository:", err);
                                 alert("Failed to trigger re-indexing. Please try again.");
@@ -424,13 +434,11 @@ export default function Home() {
                     {repo.url}
                   </p>
                   <p className="text-[11px] font-extrabold text-pg-fg/50 mt-1 mb-4">
-                    Last Indexed: {repo.indexed_at ? new Date(repo.indexed_at).toLocaleString() : 'Never'}
+                    Last Indexed: {formatLastIndexed(repo.indexed_at)}
                   </p>
 
                   <div className="flex items-center justify-between text-xs font-bold text-pg-fg/75 border-t-2 border-pg-fg/10 pt-4">
-                    <span>
-                      Owner ID: <span className="font-extrabold">{repo.owner_id}</span>
-                    </span>
+                    <span></span>
                     {isDone && (
                       <span className="text-pg-accent font-black flex items-center gap-1">
                         Open Workspace

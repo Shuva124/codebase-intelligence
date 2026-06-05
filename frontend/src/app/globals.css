@@ -50,6 +50,14 @@
   transition: all 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* Disable transitions to prevent sizing delays on fullscreen containers */
+.no-transition,
+.no-transition * {
+  transition: none !important;
+  transition-property: none !important;
+}
+
+
 /* For users with vestibular disorders or motion sensitivity */
 @media (prefers-reduced-motion: reduce) {
   * {
