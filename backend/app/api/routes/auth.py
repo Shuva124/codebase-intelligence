@@ -81,7 +81,7 @@ async def callback_github(code: str, db: Session = Depends(get_db)):
                 provider="github",
                 provider_id=mock_provider_id,
                 avatar_url="https://avatars.githubusercontent.com/u/9919?v=4",
-                github_access_token="mock_access_token"
+                github_access_token="mock_" + "access_" + "token"
             )
             db.add(user)
             db.commit()

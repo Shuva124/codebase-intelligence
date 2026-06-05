@@ -205,7 +205,7 @@ def submit_repository(
         Repository.owner_id == current_user.id
     ).first()
     if existing_repo:
-        return existing_repo
+        raise HTTPException(status_code=400, detail="Repository already exists")
 
     # Check if the URL is globally registered under any other owner (due to unique DB URL constraint)
     global_repo = db.query(Repository).filter(Repository.url == url_str).first()

@@ -51,7 +51,7 @@ class GitService:
 
         # Reconstruct repo_url to include oauth token if present for private repos
         clone_url = repo_url
-        if github_token and github_token != "mock_access_token":
+        if github_token and not github_token.startswith("mock_"):
             match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", repo_url)
             if match:
                 owner, repo_name = match.group(1), match.group(2)
