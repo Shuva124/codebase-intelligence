@@ -1,11 +1,32 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FolderGit2, Search, Settings, Menu, GitBranch, ArrowRight, X } from 'lucide-react';
+import axios from 'axios';
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('Search');
+  const [user, setUser] = useState<{ email: string; username?: string; name?: string; avatar_url?: string } | null>(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    axios.get("http://localhost:8000/api/v1/auth/me", {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    .then(response => {
+      setUser(response.data);
+    })
+    .catch(error => {
+      console.error("Failed to fetch user profile:", error);
+      if (error.response?.status === 401) {
+        localStorage.removeItem("token");
+        window.location.href = "/";
+      }
+    });
+  }, []);
 
   const navItems = [
     { id: 'Search', label: 'Search', icon: Search },
@@ -57,11 +78,21 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
         {/* User Profile - Pill shape */}
         <div className="mt-auto p-2 bg-white border-2 border-pg-fg rounded-full flex items-center gap-3 cursor-pointer hover:bg-pg-mint transition-all duration-300 ease-bounce-pop hover:shadow-hard hover:-translate-x-[2px] hover:-translate-y-[2px] active:translate-x-[2px] active:translate-y-[2px] active:shadow-hard-active">
-          <div className="w-10 h-10 rounded-full bg-pg-tertiary border-2 border-pg-fg flex items-center justify-center font-black shadow-sm text-pg-fg">
-            U
-          </div>
-          <div className="flex flex-col pr-4 select-none">
-            <span className="text-sm font-extrabold leading-tight text-pg-fg">Developer</span>
+          {user?.avatar_url ? (
+            <img 
+              src={user.avatar_url} 
+              alt="Avatar" 
+              className="w-10 h-10 rounded-full border-2 border-pg-fg object-cover shadow-sm"
+            />
+          ) : (
+            <div className="w-10 h-10 rounded-full bg-pg-tertiary border-2 border-pg-fg flex items-center justify-center font-black shadow-sm text-pg-fg">
+              {user ? (user.name ? user.name.charAt(0).toUpperCase() : (user.username ? user.username.charAt(0).toUpperCase() : user.email.charAt(0).toUpperCase())) : 'U'}
+            </div>
+          )}
+          <div className="flex flex-col pr-4 select-none max-w-[150px]">
+            <span className="text-sm font-extrabold leading-tight text-pg-fg truncate" title={user ? (user.name || user.username || user.email) : ''}>
+              {user ? (user.name || user.username || user.email.split('@')[0]) : 'Developer'}
+            </span>
             <span className="text-xs font-bold text-pg-fg/70">Pro Plan</span>
           </div>
         </div>
@@ -105,11 +136,21 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             </nav>
 
             <div className="mt-auto p-2 bg-white border-2 border-pg-fg rounded-full flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-pg-tertiary border-2 border-pg-fg flex items-center justify-center font-black">
-                U
-              </div>
-              <div className="flex flex-col pr-4">
-                <span className="text-sm font-extrabold leading-tight text-pg-fg">Developer</span>
+              {user?.avatar_url ? (
+                <img 
+                  src={user.avatar_url} 
+                  alt="Avatar" 
+                  className="w-10 h-10 rounded-full border-2 border-pg-fg object-cover shadow-sm"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-pg-tertiary border-2 border-pg-fg flex items-center justify-center font-black shadow-sm text-pg-fg">
+                  {user ? (user.name ? user.name.charAt(0).toUpperCase() : (user.username ? user.username.charAt(0).toUpperCase() : user.email.charAt(0).toUpperCase())) : 'U'}
+                </div>
+              )}
+              <div className="flex flex-col pr-4 max-w-[150px]">
+                <span className="text-sm font-extrabold leading-tight text-pg-fg truncate" title={user ? (user.name || user.username || user.email) : ''}>
+                  {user ? (user.name || user.username || user.email.split('@')[0]) : 'Developer'}
+                </span>
                 <span className="text-xs font-bold text-pg-fg/70">Pro Plan</span>
               </div>
             </div>
