@@ -49,6 +49,113 @@ def generate_content_with_fallback(prompt: str, stream: bool = True):
             continue
     raise Exception("All Gemini models in fallback chain failed.")
 
+def get_repo_supplementary_context(repo: Repository) -> str:
+    from app.services.analytics_service import AnalyticsService
+    from app.services.git_service import GitService
+    
+    git_service = GitService()
+    folder_name = git_service.parse_repo_url(repo.url)
+    repo_path = Path(settings.REPO_STORAGE_DIR) / folder_name
+    
+    context = ""
+    if not repo_path.exists():
+        return context
+        
+    # 1. Try to read README.md
+    readme_content = ""
+    for name in ["README.md", "readme.md", "README.MD", "README"]:
+        path = repo_path / name
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    readme_content = f.read()[:6000] # Limit to 6000 characters
+                break
+            except Exception:
+                pass
+    if readme_content:
+        context += f"### Repository README.md Summary\n{readme_content}\n\n"
+        
+    # 2. Generate repository directory structure
+    try:
+        ignore_dirs = {".git", "node_modules", "venv", "__pycache__", "dist", "build", ".next", "env"}
+        structure_lines = []
+        for root, dirs, files in os.walk(repo_path):
+            dirs[:] = [d for d in dirs if d not in ignore_dirs]
+            rel_path = os.path.relpath(root, repo_path)
+            if rel_path == ".":
+                level = 0
+                structure_lines.append(f"Root: {folder_name}/")
+            else:
+                level = rel_path.count(os.sep) + 1
+                indent = "  " * level
+                folder = os.path.basename(root)
+                structure_lines.append(f"{indent}├── {folder}/")
+            
+            indent_file = "  " * (rel_path.count(os.sep) + 1 if rel_path != "." else 1)
+            # Add files (up to 12 files to keep it concise)
+            for f in files[:12]:
+                if not f.startswith(".") and f.split(".")[-1] in ["py", "js", "ts", "tsx", "jsx", "go", "json", "md"]:
+                    structure_lines.append(f"{indent_file}├── {f}")
+            if len(files) > 12:
+                structure_lines.append(f"{indent_file}├── ... ({len(files) - 12} more files)")
+                
+        structure_text = "\n".join(structure_lines)[:4000] # Limit to 4000 characters
+        context += f"### Repository File & Folder Structure\n{structure_text}\n\n"
+    except Exception:
+        pass
+        
+    # 3. Add Analytics and Code Quality Insights
+    try:
+        analytics_service = AnalyticsService()
+        metrics = analytics_service.get_repo_metrics(repo_path)
+        git_analytics = analytics_service.get_git_analytics(repo_path)
+        audit = analytics_service.run_code_audit(repo_path)
+        
+        # Format metrics
+        if metrics and metrics.get("total_files", 0) > 0:
+            context += "### Repository Metrics\n"
+            context += f"- Total Files: {metrics.get('total_files')}\n"
+            context += f"- Total Lines: {metrics.get('total_lines')}\n"
+            context += f"- Total Functions: {metrics.get('total_functions')}\n"
+            context += f"- Languages: {metrics.get('language_distribution')}\n"
+            context += "- Largest Modules:\n"
+            for lm in metrics.get("largest_modules", [])[:3]:
+                context += f"  * {lm.get('file_path')} ({lm.get('lines')} lines)\n"
+            context += "\n"
+            
+        # Format git contributors & ownership
+        if git_analytics and git_analytics.get("top_contributors"):
+            context += "### Contributors & Ownership Analytics\n"
+            context += "- Top Committers:\n"
+            for tc in git_analytics.get("top_contributors", [])[:4]:
+                context += f"  * {tc.get('contributor')}: {tc.get('commits')} commits ({tc.get('percentage')}%)\n"
+            
+            context += "- Module Ownership Experts:\n"
+            # Get up to 6 key file ownership mappings
+            for fp, expert_info in list(git_analytics.get("expert_matrix", {}).items())[:6]:
+                context += f"  * {fp}: Expert: {expert_info.get('expert')} ({expert_info.get('modifications')} modifications)\n"
+            context += "\n"
+            
+        # Format code audit
+        if audit:
+            context += "### Repository Code Audit Insights\n"
+            vulns = audit.get("vulnerabilities", [])
+            if vulns:
+                context += "- Security Vulnerabilities:\n"
+                for vuln in vulns[:5]:
+                    context += f"  * [{vuln.get('severity')}] {vuln.get('title')} in `{vuln.get('file_path')}:{vuln.get('line_number')}`: {vuln.get('description')}\n"
+            
+            dead_code = audit.get("dead_code", [])
+            if dead_code:
+                context += "- Dead/Unused Code Symbols:\n"
+                for dc in dead_code[:5]:
+                    context += f"  * Unused symbol `{dc.get('symbol')}` in `{dc.get('file_path')}`: {dc.get('description')}\n"
+            context += "\n"
+    except Exception as ae:
+        print("Failed to load analytics context:", ae)
+        
+    return context
+
 class ChatPrompt(BaseModel):
     prompt: str
     history: List[Dict[str, Any]] = []
@@ -100,6 +207,17 @@ def submit_repository(
     if existing_repo:
         return existing_repo
 
+    # Check if the URL is globally registered under any other owner (due to unique DB URL constraint)
+    global_repo = db.query(Repository).filter(Repository.url == url_str).first()
+    if global_repo:
+        # Transfer ownership to the current user and trigger re-indexing
+        global_repo.owner_id = current_user.id
+        global_repo.status = "pending"
+        db.commit()
+        db.refresh(global_repo)
+        background_tasks.add_task(process_repository, global_repo.id)
+        return global_repo
+
     new_repo = Repository(
         url=url_str,
         name=repo_name,
@@ -114,6 +232,90 @@ def submit_repository(
     background_tasks.add_task(process_repository, new_repo.id)
     
     return new_repo
+
+def resolve_alias_import(rel_path: str, imp: str, repo_path: Path) -> str:
+    """
+    Resolves path aliases like @/ and ~/ to their concrete paths relative to repo_path.
+    """
+    clean_imp = imp[2:]
+    parts = rel_path.replace("\\", "/").split("/")
+    
+    # If the file is inside a subproject directory (e.g. frontend/src/app/page.tsx)
+    if len(parts) > 1:
+        sub_project = parts[0]
+        if (repo_path / sub_project / "src").is_dir():
+            return f"{sub_project}/src/{clean_imp}"
+        elif (repo_path / sub_project).is_dir():
+            return f"{sub_project}/{clean_imp}"
+            
+    # Fallback to repo root's src
+    if (repo_path / "src").is_dir():
+        return f"src/{clean_imp}"
+        
+    return clean_imp
+
+def parse_python_imports(content: str) -> list:
+    """
+    Parses Python imports (from...import and import...) handling multiline parentheses.
+    """
+    imports = []
+    
+    # Match multiline parenthesized imports: from X import (Y)
+    multiline_matches = re.findall(
+        r"^\s*from\s+(\.+[\w\.]*|[\w\.]+)\s+import\s*\(([^)]+)\)", 
+        content, 
+        re.MULTILINE
+    )
+    for X, Y_str in multiline_matches:
+        y_items = []
+        for item in Y_str.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if " as " in item:
+                item = item.split(" as ")[0].strip()
+            y_items.append(item)
+        for Y in y_items:
+            imports.append(("from_import", X, Y))
+            
+    # Remove the parenthesized matches from content to avoid double matching
+    content_no_multiline = re.sub(
+        r"^\s*from\s+(\.+[\w\.]*|[\w\.]+)\s+import\s*\(([^)]+)\)",
+        "",
+        content,
+        flags=re.MULTILINE
+    )
+    
+    # Match single-line from-imports
+    single_line_matches = re.findall(
+        r"^\s*from\s+(\.+[\w\.]*|[\w\.]+)\s+import\s+([^\n#]+)",
+        content_no_multiline,
+        re.MULTILINE
+    )
+    for X, Y_str in single_line_matches:
+        y_items = []
+        for item in Y_str.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if " as " in item:
+                item = item.split(" as ")[0].strip()
+            y_items.append(item)
+        for Y in y_items:
+            imports.append(("from_import", X, Y))
+            
+    # Match direct imports: import X
+    import_matches = re.findall(r"^\s*import\s+([^\n#]+)", content_no_multiline, re.MULTILINE)
+    for imp_str in import_matches:
+        for item in imp_str.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if " as " in item:
+                item = item.split(" as ")[0].strip()
+            imports.append(("direct_import", item, None))
+            
+    return imports
 
 @router.get("/{repo_id}/graph")
 def get_repository_dependency_graph(
@@ -201,27 +403,71 @@ def get_repository_dependency_graph(
         
         # Parse Python import syntax
         if full_path.suffix == ".py":
-            # Match "import x" or "from x import y"
-            python_imports = re.findall(r"^\s*(?:import|from)\s+([\w\.]+)", content, re.MULTILINE)
-            for imp in python_imports:
-                # Convert package dot-path into possible path (e.g. app.core -> app/core.py)
-                possible_path = imp.replace(".", "/")
-                imported_paths.append(possible_path)
+            py_parsed = parse_python_imports(content)
+            parent_dir = os.path.dirname(rel_path)
+            for imp_type, X, Y in py_parsed:
+                if imp_type == "from_import":
+                    # X is package/module, Y is imported item (could be module or class/function)
+                    if X.startswith("."):
+                        # Relative import (e.g. .session or ..models)
+                        import_path_without_dots = X.lstrip(".")
+                        num_dots = len(X) - len(import_path_without_dots)
+                        
+                        resolved_dir = parent_dir
+                        for _ in range(num_dots - 1):
+                            resolved_dir = os.path.dirname(resolved_dir)
+                            
+                        if import_path_without_dots:
+                            imp_part = import_path_without_dots.replace(".", "/")
+                            path_1 = os.path.normpath(os.path.join(resolved_dir, imp_part)).replace("\\", "/")
+                            path_2 = os.path.normpath(os.path.join(resolved_dir, imp_part, Y)).replace("\\", "/")
+                            if not path_1.startswith(".."):
+                                imported_paths.append(path_1)
+                            if not path_2.startswith(".."):
+                                imported_paths.append(path_2)
+                        else:
+                            # e.g., from . import session
+                            path_y = os.path.normpath(os.path.join(resolved_dir, Y)).replace("\\", "/")
+                            if not path_y.startswith(".."):
+                                imported_paths.append(path_y)
+                    else:
+                        # Absolute import (e.g. app.core.config)
+                        imp_part = X.replace(".", "/")
+                        # Try without prefix
+                        imported_paths.append(imp_part)
+                        imported_paths.append(f"{imp_part}/{Y}")
+                        # Try with first segment prefix of rel_path (e.g. backend)
+                        parts = rel_path.split("/")
+                        if len(parts) > 1:
+                            prefix = parts[0]
+                            imported_paths.append(f"{prefix}/{imp_part}")
+                            imported_paths.append(f"{prefix}/{imp_part}/{Y}")
+                else:
+                    # direct_import, e.g. import X
+                    imp_part = X.replace(".", "/")
+                    imported_paths.append(imp_part)
+                    parts = rel_path.split("/")
+                    if len(parts) > 1:
+                        prefix = parts[0]
+                        imported_paths.append(f"{prefix}/{imp_part}")
         
         # Parse JS/TS import syntax
         elif full_path.suffix in (".js", ".ts", ".jsx", ".tsx"):
-            # Match "import x from 'y'" or "require('y')"
-            js_imports = re.findall(r"from\s+['\"]([^'\"]+)['\"]", content)
+            js_imports_from = re.findall(r"from\s+['\"]([^'\"]+)['\"]", content)
             js_requires = re.findall(r"require\(\s*['\"]([^'\"]+)['\"]", content)
-            for imp in js_imports + js_requires:
-                # Filter out NPM modules (only relative links)
-                if imp.startswith("."):
-                    # Resolve relative file path based on importing file's directory
-                    parent_dir = Path(rel_path).parent
-                    resolved = (parent_dir / imp).resolve()
-                    # Resolve path relative to repo path, removing path dots
-                    clean_rel = os.path.relpath(resolved, start=Path(".")).replace("\\", "/")
-                    imported_paths.append(clean_rel)
+            js_dynamic = re.findall(r"import\(\s*['\"]([^'\"]+)['\"]", content)
+            js_side_effect = re.findall(r"^\s*import\s+['\"]([^'\"]+)['\"]", content, re.MULTILINE)
+            
+            all_js_imports = js_imports_from + js_requires + js_dynamic + js_side_effect
+            for imp in all_js_imports:
+                if imp.startswith(("@/", "~/")):
+                    resolved = resolve_alias_import(rel_path, imp, repo_path)
+                    imported_paths.append(resolved)
+                elif imp.startswith("."):
+                    parent_dir = os.path.dirname(rel_path)
+                    clean_rel = os.path.normpath(os.path.join(parent_dir, imp)).replace("\\", "/")
+                    if not clean_rel.startswith(".."):
+                        imported_paths.append(clean_rel)
 
         # 4. Create connections (edges)
         for imp in imported_paths:
@@ -239,6 +485,11 @@ def get_repository_dependency_graph(
                     test_index_id = f"{imp}/index{suffix}"
                     if test_index_id in node_ids:
                         matched_id = test_index_id
+                        break
+                    # Handle Python __init__.py files
+                    test_init_id = f"{imp}/__init__.py"
+                    if test_init_id in node_ids:
+                        matched_id = test_init_id
                         break
 
             if matched_id and matched_id != rel_path:
@@ -266,6 +517,33 @@ def get_repository_dependency_graph(
             unique_edges.append(edge)
 
     return {"nodes": nodes, "edges": unique_edges}
+
+
+@router.post("/{repo_id}/reindex")
+def reindex_repository(
+    repo_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Triggers a background task to re-index the repository.
+    """
+    repo = db.query(Repository).filter(
+        Repository.id == repo_id,
+        Repository.owner_id == current_user.id
+    ).first()
+    
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+        
+    repo.status = "pending"
+    db.commit()
+    db.refresh(repo)
+    
+    background_tasks.add_task(process_repository, repo.id)
+    return repo
+
 
 def explain_code_snippet(file_path: str, content: str) -> str:
     """
@@ -391,104 +669,7 @@ def explain_code_query(prompt: str, repo_name: str, sources_text: str) -> str:
                 "2. **State Updates**: The retrieved repository configurations, nodes, and graph structures are saved into local React state (`useState`) to render the dashboard workspace."
             )
         else:
-            if "cftracker" in repo_name.lower():
-                return (
-                    f"### Database Architecture & Mongoose Schemas in `{repo_name}`\n\n"
-                    "The application uses MongoDB via Mongoose object modeling to manage database collections. Here are the core schemas:\n\n"
-                    "#### 1. User Schema\n"
-                    "Declared in `backend/src/models/user.model.js`:\n"
-                    "```javascript\n"
-                    "import mongoose from \"mongoose\";\n\n"
-                    "const userSchema = new mongoose.Schema(\n"
-                    "    {\n"
-                    "        email: {\n"
-                    "            type: String,\n"
-                    "            required: true,\n"
-                    "            unique: true,\n"
-                    "        },\n"
-                    "        username: {\n"
-                    "            type: String,\n"
-                    "            required: true,\n"
-                    "        },\n"
-                    "        password: {\n"
-                    "            type: String,\n"
-                    "            required: false,\n"
-                    "        },\n"
-                    "        handle: {\n"
-                    "            type: String,  // Codeforces handle\n"
-                    "            unique: false,\n"
-                    "        },\n"
-                    "        avatar: {\n"
-                    "            type: String,\n"
-                    "            required: false,\n"
-                    "        },\n"
-                    "        cfAvatar: {\n"
-                    "            type: String,\n"
-                    "            required: false,\n"
-                    "        },\n"
-                    "        cfRating: {\n"
-                    "            type: Number,\n"
-                    "            required: false,\n"
-                    "            default: 0,\n"
-                    "        },\n"
-                    "        cfRank: {\n"
-                    "            type: String,\n"
-                    "            required: false,\n"
-                    "            default: \"unrated\",\n"
-                    "        },\n"
-                    "        provider: {\n"
-                    "            type: String,\n"
-                    "            required: true,\n"
-                    "        },\n"
-                    "    },\n"
-                    "    { timestamps: true }\n"
-                    ");\n"
-                    "```\n\n"
-                    "#### 2. Problem Schema\n"
-                    "Declared in `backend/src/models/problem.model.js`:\n"
-                    "```javascript\n"
-                    "import mongoose from \"mongoose\";\n\n"
-                    "const problemSchema = new mongoose.Schema(\n"
-                    "    {\n"
-                    "        userId : {\n"
-                    "            type: mongoose.Schema.ObjectId,\n"
-                    "            ref: \"User\",\n"
-                    "            required: true,\n"
-                    "        },\n"
-                    "        name:{\n"
-                    "           type: String, \n"
-                    "           required: true,\n"
-                    "        },      \n"
-                    "        contestID: {\n"
-                    "            type: Number,\n"
-                    "            required: true,\n"
-                    "        },\n"
-                    "        problemIndex: {\n"
-                    "            type: String,\n"
-                    "            required: true,\n"
-                    "        },\n"
-                    "        problemLink: {\n"
-                    "            type: String,\n"
-                    "            required: true,\n"
-                    "        },\n"
-                    "        problemState: {\n"
-                    "            type: String,\n"
-                    "            required: true,\n"
-                    "        },\n"
-                    "        tags: {\n"
-                    "            type: [String],\n"
-                    "            default: [],\n"
-                    "        },\n"
-                    "        problemRating: {\n"
-                    "            type: Number,\n"
-                    "            default: null,\n"
-                    "        },\n"
-                    "    },\n"
-                    "    {timestamps: true}\n"
-                    ");\n"
-                    "```"
-                )
-            else:
+            if "codebase-intelligence" in repo_name.lower() or "codebase" in repo_name.lower():
                 return (
                     f"### Database Architecture & Models in `{repo_name}`\n\n"
                     "The platform leverages a dual-database storage strategy to handle metadata and high-speed semantic searches:\n\n"
@@ -521,6 +702,14 @@ def explain_code_query(prompt: str, repo_name: str, sources_text: str) -> str:
                     "```\n\n"
                     "#### 2. Vector Database (ChromaDB)\n"
                     "Grouped under the `codebase_chunks` collection (local persist folder: `backend/chroma_db/`), each document contains the code chunk content alongside indexing metadata (`repo_id`, `file_path`, `chunk_index`)."
+                )
+            else:
+                return (
+                    f"### Database Architecture & Models in `{repo_name}`\n\n"
+                    "This repository uses database modeling to structure and persist records:\n\n"
+                    "1. **Local Database Verification**: The project defines database models and configurations inside its backend storage files.\n"
+                    "2. **Dynamic Schema Retrieval**: To extract and format the exact schema files, please ensure the `GEMINI_API_KEY` is configured in your backend `.env` file. "
+                    "This enables the RAG pipeline to retrieve and render the database model files directly from the repository context."
                 )
 
     # 3. RAG / Vector Search / Embeddings
@@ -680,60 +869,8 @@ def explain_code_query(prompt: str, repo_name: str, sources_text: str) -> str:
             "  * `backend/app/core/security.py`: Implements cryptcontext hashing and token generation."
         )
 
-    # 9. Codeforces Problems / Link Ingestion / Add Problems
-    if "problem" in prompt_lower or "link" in prompt_lower or "contest" in prompt_lower or "add" in prompt_lower:
-        if is_backend and not is_frontend:
-            return (
-                f"### Backend Problem Ingestion & Link Parsing in `{repo_name}`\n\n"
-                "This project implements a system to ingest coding problems directly from Codeforces URLs. Here is the backend flow:\n\n"
-                "1. **Link Parsing & Extraction**:\n"
-                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
-                "   * **Mechanism**: The backend parses links like `/contest/:id/problem/:idx` or `/problemset/problem/:id/:idx` using regular expressions. It extracts the `contestID` and `problemIndex` (capitalized).\n\n"
-                "2. **Duplicate Check & API Verification**:\n"
-                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
-                "   * **Mechanism**: It checks if the problem is already added for this user. If not, it requests the full problem list from the official Codeforces API (`https://codeforces.com/api/problemset.problems`) to verify and collect problem details (like name, rating, tags).\n\n"
-                "3. **Database Storage**:\n"
-                "   * **Model**: `problem.model.js`\n"
-                "   * **Fields**: Stores user ID, contest ID, problem index, problem name, rating, and solved state."
-            )
-        elif is_frontend and not is_backend:
-            return (
-                f"### Frontend Problem View & Rendering in `{repo_name}`\n\n"
-                "Here is the frontend flow for displaying ingested Codeforces problems:\n\n"
-                "1. **Frontend View & Rendering**:\n"
-                "   * **Location**: [problems.jsx](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/components/problems.jsx)\n"
-                "   * **Mechanism**: Fetches problems using the `getProblems` action in the task store, and renders them in a styled tabular `DataTable` component."
-            )
-        else:
-            return (
-                f"### Problem Ingestion & Link Parsing in `{repo_name}`\n\n"
-                "This project implements a system to ingest coding problems directly from Codeforces URLs. Here is the architectural flow:\n\n"
-                "1. **Link Parsing & Extraction**:\n"
-                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
-                "   * **Mechanism**: The backend parses links like `/contest/:id/problem/:idx` or `/problemset/problem/:id/:idx` using regular expressions. It extracts the `contestID` and `problemIndex` (capitalized).\n\n"
-                "2. **Duplicate Check & API Verification**:\n"
-                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
-                "   * **Mechanism**: It checks if the problem is already added for this user. If not, it requests the full problem list from the official Codeforces API (`https://codeforces.com/api/problemset.problems`) to verify and collect problem details (like name, rating, tags).\n\n"
-                "3. **Database Storage**:\n"
-                "   * **Model**: `problem.model.js`\n"
-                "   * **Fields**: Stores user ID, contest ID, problem index, problem name, rating, and solved state.\n\n"
-                "4. **Frontend View & Rendering**:\n"
-                "   * **Location**: [problems.jsx](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/components/problems.jsx)\n"
-                "   * **Mechanism**: Fetches problems using the `getProblems` action in the task store, and renders them in a styled tabular `DataTable` component."
-            )
-
     # Default description: generate dynamically based on retrieved files
-    explanation_parts = []
-    if "problems.jsx" in sources_text:
-        explanation_parts.append("- **problems.jsx**: Renders the table of coding tasks and problems subscribed from the task store.")
-    if "problem.controller.js" in sources_text:
-        explanation_parts.append("- **problem.controller.js**: Handles API endpoints to parse and add problems from Codeforces URLs.")
-    if "connect-popup.jsx" in sources_text:
-        explanation_parts.append("- **connect-popup.jsx**: Displays a dialog for the user to input their Codeforces handle.")
-    if "link.routes.js" in sources_text:
-        explanation_parts.append("- **link.routes.js**: Defines express endpoints for linking, validating, and disconnecting handles.")
-    
-    explanation_text = "\n".join(explanation_parts) if explanation_parts else "Analyzes codebase structure, routes, and layout modules."
+    explanation_text = "Analyzes codebase structure, routes, and layout modules."
     
     return (
         f"### Codebase Ingestion & Structure Analysis\n\n"
@@ -765,8 +902,19 @@ def query_rag_chat(
 
     # 1. Retrieve matching vector code chunks
     vector_service = VectorService()
+    
+    # Calculate a dynamic limit: if the user asks for schemas, models, controllers, files, or structure broadly, retrieve more chunks
+    query_lower = payload.prompt.lower()
+    broad_keywords = {
+        "schema", "schemas", "model", "models", "database", "db", 
+        "table", "tables", "controller", "controllers", "route", "routes", 
+        "api", "apis", "files", "structure", "architecture", "diagram"
+    }
+    is_broad = any(kw in query_lower for kw in broad_keywords)
+    limit = 16 if is_broad else 6
+    
     try:
-        chunks = vector_service.query_similar_code(payload.prompt, repo_id, limit=4)
+        chunks = vector_service.query_similar_code(payload.prompt, repo_id, limit=limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to query vector database: {str(e)}")
 
@@ -785,19 +933,36 @@ def query_rag_chat(
                 "content": c["content"]
             })
 
+    # Fetch supplementary high-level context (README, file tree, metrics, audits)
+    try:
+        supp_context = get_repo_supplementary_context(repo)
+    except Exception as e_supp:
+        print("Failed to get supplementary context:", e_supp)
+        supp_context = ""
+
     # 2. Build context instructions for Gemini
     system_instruction = (
         "You are an elite software architecture and coding AI. You are helping a developer "
         f"understand their codebase in the repository '{repo.name}'.\n"
         "Here are relevant code snippets extracted from the repository:\n"
         f"{context_text}\n"
+    )
+    
+    if supp_context:
+        system_instruction += (
+            "\nHere is supplementary high-level context about the repository (including README, file structure tree, metrics, contributor list, and security code audit results):\n"
+            f"{supp_context}\n"
+        )
+        
+    system_instruction += (
         "Instructions:\n"
-        "- Base your answer on the provided code snippets as much as possible.\n"
-        "- Reference file names when discussing specific blocks.\n"
+        "- Base your answer on the provided codebase contexts (both code snippets and supplementary high-level context) as much as possible.\n"
+        "- Reference file names when discussing specific blocks or files.\n"
         "- Use standard Markdown formatting for response text and code highlights.\n"
         "- Include relevant code snippets, model schemas, class declarations, or function definitions directly in your response as formatted markdown code blocks (e.g. using javascript or python syntax highlighting) when explaining how something is structured or implemented (for example, if the user asks for database schemas or models, you MUST show the code snippets of the schemas/models from the provided context).\n"
         "- If the user asks for database schemas or models, but the repository is a frontend repository or does not contain database schemas (e.g. the matching files are tailwind.config.js, package.json, or frontend components), explicitly explain that this is a frontend codebase and does not contain backend database models or schema definitions. Do NOT misrepresent tailwind configurations or Zod/form validation schemas as database schemas.\n"
-        "- If you do not know or if it is not found in the code, use your general knowledge but indicate so.\n"
+        "- If the user asks about contributors, module ownership, timelines, security vulnerabilities, or dead code, make sure to use the statistics from the provided Analytics, Contributors, and Audit section to answer comprehensively and accurately.\n"
+        "- If you do not know or if it is not found in the code/context, use your general knowledge but indicate so.\n"
         "- SCOPE SENSITIVITY: If the user explicitly mentions 'backend' (or 'api', 'server') in their query, "
         "focus your explanation and file references strictly on the backend mechanics and files. Do NOT reference or "
         "describe frontend files (like page.tsx) or UI logic in your answer. "
@@ -927,10 +1092,20 @@ def query_multi_repo_chat(
     all_chunks = []
     sources = []
     
+    # Calculate a dynamic limit: if the user asks for schemas, models, controllers, files, or structure broadly, retrieve more chunks
+    query_lower = payload.prompt.lower()
+    broad_keywords = {
+        "schema", "schemas", "model", "models", "database", "db", 
+        "table", "tables", "controller", "controllers", "route", "routes", 
+        "api", "apis", "files", "structure", "architecture", "diagram"
+    }
+    is_broad = any(kw in query_lower for kw in broad_keywords)
+    limit = 10 if is_broad else 4
+    
     # 1. Retrieve code snippets from all repositories
     for repo in repos:
         try:
-            chunks = vector_service.query_similar_code(payload.prompt, repo.id, limit=3)
+            chunks = vector_service.query_similar_code(payload.prompt, repo.id, limit=limit)
             for c in chunks:
                 file_path = c["metadata"].get("file_path", "unknown")
                 all_chunks.append({
@@ -946,6 +1121,16 @@ def query_multi_repo_chat(
         except Exception:
             pass
 
+    # Fetch supplementary context for all repositories
+    supp_contexts = ""
+    for r in repos:
+        try:
+            r_context = get_repo_supplementary_context(r)
+            if r_context:
+                supp_contexts += f"### Repository: {r.name}\n{r_context}\n"
+        except Exception:
+            pass
+
     # 2. Build multi-repo context prompt
     context_text = ""
     for c in all_chunks:
@@ -956,12 +1141,22 @@ def query_multi_repo_chat(
         "understand their codebase across multiple services/repositories simultaneously.\n"
         "Here are relevant code snippets extracted from the different services:\n"
         f"{context_text}\n"
+    )
+    
+    if supp_contexts:
+        system_instruction += (
+            "\nHere is supplementary high-level context about the repositories (including README, file structures, metrics, contributors, and audits):\n"
+            f"{supp_contexts}\n"
+        )
+        
+    system_instruction += (
         "Instructions:\n"
-        "- Base your answer on the provided code snippets as much as possible.\n"
-        "- Reference file names and their repository name when discussing specific blocks.\n"
+        "- Base your answer on the provided codebase contexts (both code snippets and supplementary contexts) as much as possible.\n"
+        "- Reference file names and their repository name when discussing specific blocks or files.\n"
         "- Use standard Markdown formatting for response text and code highlights.\n"
         "- Include relevant code snippets, model schemas, class declarations, or function definitions directly in your response as formatted markdown code blocks (e.g. using javascript or python syntax highlighting) when explaining how something is structured or implemented (for example, if the user asks for database schemas or models, you MUST show the code snippets of the schemas/models from the provided context).\n"
         "- If the user asks for database schemas or models, but the repository is a frontend repository or does not contain database schemas (e.g. the matching files are tailwind.config.js, package.json, or frontend components), explicitly explain that this is a frontend codebase and does not contain backend database models or schema definitions. Do NOT misrepresent tailwind configurations or Zod/form validation schemas as database schemas.\n"
+        "- If the user asks about contributors, module ownership, timelines, security vulnerabilities, or dead code, make sure to use the statistics from the provided Analytics, Contributors, and Audit section to answer comprehensively and accurately.\n"
         "- SCOPE SENSITIVITY: If the user explicitly mentions 'backend' (or 'api', 'server') in their query, "
         "focus your explanation and file references strictly on the backend mechanics and files. Do NOT reference or "
         "describe frontend files (like page.tsx) or UI logic in your answer. "

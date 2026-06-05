@@ -74,7 +74,14 @@ class BM25Retriever:
         self._initialize()
 
     def _tokenize(self, text: str) -> List[str]:
-        return [w.lower() for w in re.findall(r"\b[a-zA-Z0-9_-]+\b", text) if len(w) > 1]
+        tokens = [w.lower() for w in re.findall(r"\b[a-zA-Z0-9_-]+\b", text) if len(w) > 1]
+        stemmed_tokens = []
+        for t in tokens:
+            # Simple singularization to handle singular/plural mismatches (e.g. schemas vs schema, models vs model)
+            if t.endswith("s") and len(t) > 2 and not t.endswith("ss"):
+                stemmed_tokens.append(t[:-1])
+            stemmed_tokens.append(t)
+        return stemmed_tokens
 
     def _initialize(self):
         total_len = 0
@@ -407,6 +414,16 @@ class VectorService:
 
             # 5. Fusion (RRF)
             fused_candidates = self.reciprocal_rank_fusion(vector_matches, bm25_matches)
+
+            # Boost matches based on query intent and file path keywords (e.g. model, schema, db)
+            query_lower = query.lower()
+            if "schema" in query_lower or "model" in query_lower or "db" in query_lower or "database" in query_lower:
+                for item in fused_candidates:
+                    file_path = item["metadata"].get("file_path", "").lower()
+                    if "model" in file_path or "schema" in file_path or "db" in file_path:
+                        item["rrf_score"] = item.get("rrf_score", 0.0) * 2.0
+                # Re-sort fused candidates after boosting
+                fused_candidates = sorted(fused_candidates, key=lambda x: x.get("rrf_score", 0.0), reverse=True)
 
             # 6. Re-ranking
             # Expand the list passed to LLM for re-ranking to get a better selection

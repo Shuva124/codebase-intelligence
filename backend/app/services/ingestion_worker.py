@@ -22,11 +22,14 @@ def process_repository(repo_id: int):
     db.commit()
 
     try:
-        print(f"Starting ingestion for {repo.name}...")
-        
+        # Fetch the owner's github access token to authenticate private repository clones
+        from app.models.user import User
+        owner = db.query(User).filter(User.id == repo.owner_id).first()
+        github_token = owner.github_access_token if owner else None
+
         # 2. Clone the repository
         git_service = GitService()
-        repo_path = git_service.clone_repository(repo.url)
+        repo_path = git_service.clone_repository(repo.url, github_token=github_token)
 
         # 3. Parse the files into chunks
         parser = CodeParserService()
