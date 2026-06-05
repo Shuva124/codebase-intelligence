@@ -367,6 +367,31 @@ export default function Home() {
                         </span>
                       )}
 
+                      {/* Re-index button */}
+                      {isDone && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (confirm(`Are you sure you want to re-index ${repo.name}?`)) {
+                              try {
+                                await axios.post(`http://localhost:8000/api/v1/repositories/${repo.id}/reindex`, {}, {
+                                  headers: { Authorization: `Bearer ${token}` }
+                                });
+                                // Locally update state to pending to show immediate loading
+                                setRepos(prev => prev.map(r => r.id === repo.id ? { ...r, status: 'pending' } : r));
+                              } catch (err) {
+                                console.error("Failed to re-index repository:", err);
+                                alert("Failed to trigger re-indexing. Please try again.");
+                              }
+                            }
+                          }}
+                          className="flex items-center justify-center p-2 rounded-full border-2 border-pg-fg shadow-hard bg-pg-mint text-pg-fg hover:bg-pg-mint/80 transition-all duration-200 text-xs font-black select-none shrink-0"
+                          title="Re-index Repository"
+                        >
+                          <RefreshCw size={14} strokeWidth={2.5} />
+                        </button>
+                      )}
+
                       {/* Delete button with confirmation state */}
                       <button
                         onClick={(e) => handleDeleteRepo(e, repo.id)}
@@ -395,8 +420,11 @@ export default function Home() {
                   <h5 className="text-xl font-heading font-black text-pg-fg truncate mb-1" title={repo.name}>
                     {repo.name.split("/").pop()}
                   </h5>
-                  <p className="text-xs font-bold text-pg-fg/60 truncate mb-4 select-all">
+                  <p className="text-xs font-bold text-pg-fg/60 truncate select-all">
                     {repo.url}
+                  </p>
+                  <p className="text-[11px] font-extrabold text-pg-fg/50 mt-1 mb-4">
+                    Last Indexed: {repo.indexed_at ? new Date(repo.indexed_at).toLocaleString() : 'Never'}
                   </p>
 
                   <div className="flex items-center justify-between text-xs font-bold text-pg-fg/75 border-t-2 border-pg-fg/10 pt-4">

@@ -197,6 +197,29 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
       setToken(storedToken);
     }
   }, [router]);
+ 
+  // Poll repository status to redirect back if it is being re-indexed or deleted
+  useEffect(() => {
+    if (!token || !repoId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await axios.get("http://localhost:8000/api/v1/repositories/my", {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const currentRepo = response.data.find((r: any) => r.id === parseInt(repoId));
+        
+        // If repo is deleted, or status is pending/indexing, redirect to home page (close workspace)
+        if (!currentRepo || currentRepo.status === 'pending' || currentRepo.status === 'indexing') {
+          router.push("/");
+        }
+      } catch (error) {
+        console.error("Failed to poll repository status in workspace:", error);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [token, repoId, router]);
 
   // Fetch API details on load
   useEffect(() => {
@@ -646,13 +669,35 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
       
       {/* Upper Navigation Row */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6 select-none">
-        <button 
-          onClick={() => router.push("/")}
-          className="flex items-center gap-2 bg-white border-2 border-pg-fg px-4 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200"
-        >
-          <ArrowLeft size={14} strokeWidth={3} />
-          <span>Back to Repositories</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={() => router.push("/")}
+            className="flex items-center gap-2 bg-white border-2 border-pg-fg px-4 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200"
+          >
+            <ArrowLeft size={14} strokeWidth={3} />
+            <span>Back to Repositories</span>
+          </button>
+
+          <button 
+            onClick={async () => {
+              if (confirm("Are you sure you want to re-index this repository? This will redirect you to the dashboard while processing.")) {
+                try {
+                  await axios.post(`http://localhost:8000/api/v1/repositories/${repoId}/reindex`, {}, {
+                    headers: { Authorization: `Bearer ${token}` }
+                  });
+                  router.push("/");
+                } catch (err) {
+                  console.error("Failed to re-index repository:", err);
+                  alert("Failed to trigger re-indexing. Please try again.");
+                }
+              }
+            }}
+            className="flex items-center gap-2 bg-pg-mint text-pg-fg border-2 border-pg-fg px-4 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200"
+          >
+            <RefreshCw size={14} strokeWidth={3} />
+            <span>Re-index Repository</span>
+          </button>
+        </div>
 
         <div className="bg-pg-muted border-2 border-pg-fg rounded-full px-5 py-2 text-xs font-black text-pg-fg flex items-center gap-2">
           <Code size={14} strokeWidth={2.5} />

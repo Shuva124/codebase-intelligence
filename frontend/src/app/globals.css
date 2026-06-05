@@ -9,8 +9,10 @@
   --color-pg-mint: #34D399;
   --color-pg-muted: #F1F5F9;
 
-  --font-sans: var(--font-jakarta), system-ui, sans-serif;
-  --font-heading: var(--font-outfit), system-ui, sans-serif;
+  --font-jakarta: "Plus Jakarta Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-outfit: "Outfit", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: var(--font-jakarta);
+  --font-heading: var(--font-outfit);
 
   --ease-bounce-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
 
