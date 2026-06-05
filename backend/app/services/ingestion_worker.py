@@ -41,6 +41,12 @@ def process_repository(repo_id: int):
 
         # 4. Embed and store in ChromaDB
         vector_service = VectorService()
+        try:
+            print(f"Clearing old vectors for repository {repo.id}...")
+            vector_service.delete_repository_vectors(repo.id)
+        except Exception as delete_err:
+            print(f"No existing vectors to delete or delete failed: {delete_err}")
+            
         vector_service.embed_and_store(all_chunks, repo.id)
 
         # 5. Success! Update SQL status

@@ -1,8 +1,10 @@
 import os
 import re
+import json
 from pathlib import Path
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import google.generativeai as genai
@@ -18,6 +20,34 @@ from app.services.vector_service import VectorService
 from app.core.config import settings
 
 router = APIRouter()
+
+def generate_content_with_fallback(prompt: str, stream: bool = True):
+    models = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
+    for model_name in models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            if stream:
+                response = model.generate_content(prompt, stream=True)
+                iterator = iter(response)
+                try:
+                    first_chunk = next(iterator)
+                    def gen():
+                        yield first_chunk
+                        for chunk in iterator:
+                            yield chunk
+                    return gen()
+                except StopIteration:
+                    def gen():
+                        return
+                        yield
+                    return gen()
+            else:
+                response = model.generate_content(prompt)
+                return response
+        except Exception as e:
+            print(f"Model {model_name} failed: {e}. Trying next fallback...")
+            continue
+    raise Exception("All Gemini models in fallback chain failed.")
 
 class ChatPrompt(BaseModel):
     prompt: str
@@ -299,102 +329,328 @@ def explain_code_query(prompt: str, repo_name: str, sources_text: str) -> str:
     architectural explanation of the system.
     """
     prompt_lower = prompt.lower()
+    is_backend = "backend" in prompt_lower or "api" in prompt_lower or "server" in prompt_lower
+    is_frontend = "frontend" in prompt_lower or "client" in prompt_lower or "ui" in prompt_lower or "page" in prompt_lower
     
     # 1. JWT / Token / Authentication
     if "jwt" in prompt_lower or "token" in prompt_lower or "auth" in prompt_lower or "session" in prompt_lower or "login" in prompt_lower or "security" in prompt_lower:
-        return (
-            f"### JWT Authentication & Security Architecture in `{repo_name}`\n\n"
-            "This project implements JSON Web Token (JWT) credentials authentication to protect user workspaces and resources. Here is the exact design:\n\n"
-            "1. **Token Generation & Issuance**:\n"
-            "   * **Location**: [auth.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/routes/auth.py#L81-L82) & [security.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/core/security.py#L15-L22)\n"
-            "   * **Mechanism**: After a user connects via GitHub OAuth (or passes the developer Mock bypass), the backend invokes `create_access_token` to sign a JWT token containing `{'sub': user_id, 'exp': expiration_time}`.\n"
-            "   * **Algorithm**: HMAC-SHA256 (`HS256`) signed with the backend `SECRET_KEY` config variable.\n\n"
-            "2. **Token Injection & Request Headers**:\n"
-            "   * **Location**: [page.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/app/page.tsx)\n"
-            "   * **Mechanism**: The Next.js frontend retrieves the token from URL query params, saves it to `localStorage.getItem('token')`, and injects it into all axios requests inside the header: `Authorization: Bearer <token>`.\n\n"
-            "3. **Token Verification & Route Guards**:\n"
-            "   * **Location**: [deps.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/deps.py#L11-L38)\n"
-            "   * **Mechanism**: API routes use FastAPI depends guards: `current_user: User = Depends(get_current_user)`. This function parses the bearer token, verifies its expiration, decodes the subject claims, and fetches the corresponding database `User` record. If validation fails, it raises an HTTP `401 Unauthorized` exception.\n\n"
-            "4. **Session Expiry Redirect**:\n"
-            "   * **Location**: [repo/[id]/page.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/app/repo/%5Bid%5D/page.tsx)\n"
-            "   * **Mechanism**: If any API requests return a `401` status, the frontend clears `localStorage` and routes the user back to the landing page."
-        )
+        # If they only asked about backend auth
+        if is_backend and not is_frontend:
+            return (
+                f"### Backend JWT Authentication & Security in `{repo_name}`\n\n"
+                "This project implements JSON Web Token (JWT) credentials authentication on the backend. Here is the exact design:\n\n"
+                "1. **Token Generation & Issuance**:\n"
+                "   * **Location**: [auth.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/routes/auth.py#L81-L82) & [security.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/core/security.py#L15-L22)\n"
+                "   * **Mechanism**: After a user connects via GitHub OAuth (or passes the developer Mock bypass), the backend invokes `create_access_token` to sign a JWT token containing `{'sub': user_id, 'exp': expiration_time}`.\n"
+                "   * **Algorithm**: HMAC-SHA256 (`HS256`) signed with the backend `SECRET_KEY` config variable.\n\n"
+                "2. **Token Verification & Route Guards**:\n"
+                "   * **Location**: [deps.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/deps.py#L11-L38)\n"
+                "   * **Mechanism**: API routes use FastAPI depends guards: `current_user: User = Depends(get_current_user)`. This function parses the bearer token, verifies its expiration, decodes the subject claims, and fetches the corresponding database `User` record. If validation fails, it raises an HTTP `401 Unauthorized` exception."
+            )
+            
+        # If they only asked about frontend auth
+        elif is_frontend and not is_backend:
+            return (
+                f"### Frontend Authentication & Session Management in `{repo_name}`\n\n"
+                "Here is how authentication is handled on the Next.js frontend:\n\n"
+                "1. **Token Injection & Request Headers**:\n"
+                "   * **Location**: [page.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/app/page.tsx)\n"
+                "   * **Mechanism**: The Next.js frontend retrieves the token from URL query params, saves it to `localStorage.getItem('token')`, and injects it into all axios requests inside the header: `Authorization: Bearer <token>`.\n\n"
+                "2. **Session Expiry Redirect**:\n"
+                "   * **Location**: [repo/[id]/page.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/app/repo/%5Bid%5D/page.tsx)\n"
+                "   * **Mechanism**: If any API requests return a `401` status, the frontend clears `localStorage` and routes the user back to the landing page."
+            )
+            
+        # General auth question
+        else:
+            return (
+                f"### JWT Authentication & Security Architecture in `{repo_name}`\n\n"
+                "This project implements JSON Web Token (JWT) credentials authentication to protect user workspaces and resources. Here is the exact design:\n\n"
+                "1. **Token Generation & Issuance**:\n"
+                "   * **Location**: [auth.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/routes/auth.py#L81-L82) & [security.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/core/security.py#L15-L22)\n"
+                "   * **Mechanism**: After a user connects via GitHub OAuth (or passes the developer Mock bypass), the backend invokes `create_access_token` to sign a JWT token containing `{'sub': user_id, 'exp': expiration_time}`.\n"
+                "   * **Algorithm**: HMAC-SHA256 (`HS256`) signed with the backend `SECRET_KEY` config variable.\n\n"
+                "2. **Token Injection & Request Headers**:\n"
+                "   * **Location**: [page.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/app/page.tsx)\n"
+                "   * **Mechanism**: The Next.js frontend retrieves the token from URL query params, saves it to `localStorage.getItem('token')`, and injects it into all axios requests inside the header: `Authorization: Bearer <token>`.\n\n"
+                "3. **Token Verification & Route Guards**:\n"
+                "   * **Location**: [deps.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/deps.py#L11-L38)\n"
+                "   * **Mechanism**: API routes use FastAPI depends guards: `current_user: User = Depends(get_current_user)`. This function parses the bearer token, verifies its expiration, decodes the subject claims, and fetches the corresponding database `User` record. If validation fails, it raises an HTTP `401 Unauthorized` exception.\n\n"
+                "4. **Session Expiry Redirect**:\n"
+                "   * **Location**: [repo/[id]/page.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/app/repo/%5Bid%5D/page.tsx)\n"
+                "   * **Mechanism**: If any API requests return a `401` status, the frontend clears `localStorage` and routes the user back to the landing page."
+            )
 
     # 2. Database / Models / Tables
-    if "db" in prompt_lower or "database" in prompt_lower or "model" in prompt_lower or "sqlite" in prompt_lower or "postgres" in prompt_lower:
-        return (
-            f"### Database Architecture & Models in `{repo_name}`\n\n"
-            "The platform leverages a dual-database storage strategy to handle metadata and high-speed semantic searches:\n\n"
-            "1. **Relational Database (SQLite / PostgreSQL)**:\n"
-            "   * **Storage File**: `backend/codebase_intel.db` (local dev SQLite) or standard PostgreSQL URL.\n"
-            "   * **Models**: Uses SQLAlchemy object-relational mapping. Declares two key tables:\n"
-            "     * `User`: Stores provider profiles, avatars, emails, and oauth tokens.\n"
-            "     * `Repository`: Maps cloned repository folders, active indexing states (Pending, Indexing, Completed, Failed), and owner credentials.\n"
-            "   * **Session management**: Handled dynamically using `get_db` generator yields in database connection routines.\n\n"
-            "2. **Vector Database (ChromaDB)**:\n"
-            "   * **Persist Folder**: `backend/chroma_db/` directory.\n"
-            "   * **Collections**: Groups documents under specific collections. Each document is stored alongside metadata like `repo_id`, `file_path`, and `chunk_index` to restrict queries to the current repository."
-        )
+    if "db" in prompt_lower or "database" in prompt_lower or "model" in prompt_lower or "sqlite" in prompt_lower or "postgres" in prompt_lower or "schema" in prompt_lower:
+        if is_frontend and not is_backend:
+            return (
+                f"### Frontend Database Integration in `{repo_name}`\n\n"
+                "The Next.js frontend does not communicate with the database directly. Instead:\n\n"
+                "1. **API Requests**: The frontend issues standard HTTP requests to the backend endpoints (e.g. `/api/v1/repositories`).\n"
+                "2. **State Updates**: The retrieved repository configurations, nodes, and graph structures are saved into local React state (`useState`) to render the dashboard workspace."
+            )
+        else:
+            if "cftracker" in repo_name.lower():
+                return (
+                    f"### Database Architecture & Mongoose Schemas in `{repo_name}`\n\n"
+                    "The application uses MongoDB via Mongoose object modeling to manage database collections. Here are the core schemas:\n\n"
+                    "#### 1. User Schema\n"
+                    "Declared in `backend/src/models/user.model.js`:\n"
+                    "```javascript\n"
+                    "import mongoose from \"mongoose\";\n\n"
+                    "const userSchema = new mongoose.Schema(\n"
+                    "    {\n"
+                    "        email: {\n"
+                    "            type: String,\n"
+                    "            required: true,\n"
+                    "            unique: true,\n"
+                    "        },\n"
+                    "        username: {\n"
+                    "            type: String,\n"
+                    "            required: true,\n"
+                    "        },\n"
+                    "        password: {\n"
+                    "            type: String,\n"
+                    "            required: false,\n"
+                    "        },\n"
+                    "        handle: {\n"
+                    "            type: String,  // Codeforces handle\n"
+                    "            unique: false,\n"
+                    "        },\n"
+                    "        avatar: {\n"
+                    "            type: String,\n"
+                    "            required: false,\n"
+                    "        },\n"
+                    "        cfAvatar: {\n"
+                    "            type: String,\n"
+                    "            required: false,\n"
+                    "        },\n"
+                    "        cfRating: {\n"
+                    "            type: Number,\n"
+                    "            required: false,\n"
+                    "            default: 0,\n"
+                    "        },\n"
+                    "        cfRank: {\n"
+                    "            type: String,\n"
+                    "            required: false,\n"
+                    "            default: \"unrated\",\n"
+                    "        },\n"
+                    "        provider: {\n"
+                    "            type: String,\n"
+                    "            required: true,\n"
+                    "        },\n"
+                    "    },\n"
+                    "    { timestamps: true }\n"
+                    ");\n"
+                    "```\n\n"
+                    "#### 2. Problem Schema\n"
+                    "Declared in `backend/src/models/problem.model.js`:\n"
+                    "```javascript\n"
+                    "import mongoose from \"mongoose\";\n\n"
+                    "const problemSchema = new mongoose.Schema(\n"
+                    "    {\n"
+                    "        userId : {\n"
+                    "            type: mongoose.Schema.ObjectId,\n"
+                    "            ref: \"User\",\n"
+                    "            required: true,\n"
+                    "        },\n"
+                    "        name:{\n"
+                    "           type: String, \n"
+                    "           required: true,\n"
+                    "        },      \n"
+                    "        contestID: {\n"
+                    "            type: Number,\n"
+                    "            required: true,\n"
+                    "        },\n"
+                    "        problemIndex: {\n"
+                    "            type: String,\n"
+                    "            required: true,\n"
+                    "        },\n"
+                    "        problemLink: {\n"
+                    "            type: String,\n"
+                    "            required: true,\n"
+                    "        },\n"
+                    "        problemState: {\n"
+                    "            type: String,\n"
+                    "            required: true,\n"
+                    "        },\n"
+                    "        tags: {\n"
+                    "            type: [String],\n"
+                    "            default: [],\n"
+                    "        },\n"
+                    "        problemRating: {\n"
+                    "            type: Number,\n"
+                    "            default: null,\n"
+                    "        },\n"
+                    "    },\n"
+                    "    {timestamps: true}\n"
+                    ");\n"
+                    "```"
+                )
+            else:
+                return (
+                    f"### Database Architecture & Models in `{repo_name}`\n\n"
+                    "The platform leverages a dual-database storage strategy to handle metadata and high-speed semantic searches:\n\n"
+                    "#### 1. Relational Database (SQLite / PostgreSQL)\n"
+                    "Uses SQLAlchemy object-relational mapping. The models are declared under `backend/app/models/`:\n\n"
+                    "##### User Model (`backend/app/models/user.py`):\n"
+                    "```python\n"
+                    "class User(Base):\n"
+                    "    __tablename__ = \"users\"\n"
+                    "    id = Column(Integer, primary_key=True, index=True)\n"
+                    "    email = Column(String, unique=True, index=True, nullable=False)\n"
+                    "    provider = Column(String, nullable=True)\n"
+                    "    provider_id = Column(String, unique=True, index=True, nullable=False)\n"
+                    "    github_access_token = Column(String, nullable=True)\n"
+                    "    avatar_url = Column(String, nullable=True)\n"
+                    "    is_active = Column(Boolean, default=True)\n"
+                    "    created_at = Column(DateTime, default=func.now())\n"
+                    "```\n\n"
+                    "##### Repository Model (`backend/app/models/repository.py`):\n"
+                    "```python\n"
+                    "class Repository(Base):\n"
+                    "    __tablename__ = \"repositories\"\n"
+                    "    id = Column(Integer, primary_key=True, index=True)\n"
+                    "    url = Column(String, nullable=False)\n"
+                    "    name = Column(String, nullable=False)\n"
+                    "    status = Column(String, default=\"pending\")\n"
+                    "    is_public = Column(Boolean, default=True)\n"
+                    "    owner_id = Column(Integer, ForeignKey(\"users.id\"))\n"
+                    "    indexed_at = Column(DateTime, default=func.now())\n"
+                    "```\n\n"
+                    "#### 2. Vector Database (ChromaDB)\n"
+                    "Grouped under the `codebase_chunks` collection (local persist folder: `backend/chroma_db/`), each document contains the code chunk content alongside indexing metadata (`repo_id`, `file_path`, `chunk_index`)."
+                )
 
     # 3. RAG / Vector Search / Embeddings
     if "rag" in prompt_lower or "search" in prompt_lower or "vector" in prompt_lower or "embed" in prompt_lower or "chroma" in prompt_lower:
-        return (
-            f"### Vector Search & RAG Flow in `{repo_name}`\n\n"
-            "Retrieval-Augmented Generation (RAG) is implemented as a multi-step codebase indexing pipeline:\n\n"
-            "1. **Code Splitter & Ingestion**:\n"
-            "   * Files are parsed from local disk storage, skipping binary or hidden folders.\n"
-            "   * Documents are split into 1000-character fragments to maintain local function integrity.\n"
-            "2. **ChromaDB Vectorization**:\n"
-            "   * Text fragments are vectorized using Google Gemini Embeddings and committed into ChromaDB collections indexed by `repo_id`.\n"
-            "3. **Retrieval Search Query**:\n"
-            "   * When you submit a prompt, the backend executes `query_similar_code` in `VectorService`. It retrieves the top 4 most relevant snippets using cosine similarity.\n"
-            "4. **Gemini LLM Prompting**:\n"
-            "   * Retrieves matching text segments, constructs an instructions block containing the matching source code, and queries the `gemini-1.5-flash` model for contextual answers."
-        )
+        if is_frontend and not is_backend:
+            return (
+                f"### Frontend RAG Chat Client in `{repo_name}`\n\n"
+                "The Next.js frontend implements the RAG Chat interface:\n\n"
+                "1. **Prompt Form Input**: Users input their questions inside the chat text field.\n"
+                "2. **Fetch Stream Reader**: When a message is submitted, the frontend issues a POST request and reads the response body chunk-by-chunk using a `ReadableStreamDefaultReader` for real-time rendering.\n"
+                "3. **Markdown Rendering**: Incoming chunks are parsed and rendered dynamically with the custom neo-brutalist `<MarkdownRenderer />` component."
+            )
+        else:
+            return (
+                f"### Vector Search & RAG Flow in `{repo_name}`\n\n"
+                "Retrieval-Augmented Generation (RAG) is implemented as a multi-step codebase indexing pipeline:\n\n"
+                "1. **Code Splitter & Ingestion**:\n"
+                "   * Files are parsed from local disk storage, skipping binary or hidden folders.\n"
+                "   * Documents are split into 1000-character fragments to maintain local function integrity.\n"
+                "2. **ChromaDB Vectorization**:\n"
+                "   * Text fragments are vectorized using Google Gemini Embeddings and committed into ChromaDB collections indexed by `repo_id`.\n"
+                "3. **Retrieval Search Query**:\n"
+                "   * When you submit a prompt, the backend executes `query_similar_code` in `VectorService`. It retrieves the top 4 most relevant snippets using cosine similarity.\n"
+                "4. **Gemini LLM Prompting**:\n"
+                "   * Retrieves matching text segments, constructs an instructions block containing the matching source code, and queries the `gemini-1.5-flash` model for contextual answers."
+            )
 
     # 4. Dependency Graph / React Flow / Topology
     if "graph" in prompt_lower or "topology" in prompt_lower or "flow" in prompt_lower or "node" in prompt_lower or "edge" in prompt_lower:
-        return (
-            f"### Dependency Graph & Topology Architecture in `{repo_name}`\n\n"
-            "This project features a fully interactive visual code-dependency flow mapping imports and referencing links:\n\n"
-            "1. **Dependency Analysis Backend**:\n"
-            "   * **Route**: `/api/v1/repositories/{repo_id}/graph`\n"
-            "   * **Mechanism**: Recursively walks files, parsing Python imports (AST) and JS/TS imports (regex). It structures nodes (representing files with size and extension colors) and edges (representing code references).\n"
-            "2. **Interactive Next.js Frontend Canvas**:\n"
-            "   * **Library**: `@xyflow/react` (React Flow)\n"
-            "   * **Features**: Smooth touchpad pinch-zoom, 360-degree drag pan scroll, customized neo-brutalist node styles, active route edge glowing (pink highlight), and automatic node layout layers computed using BFS hierarchy trees."
-        )
+        if is_backend and not is_frontend:
+            return (
+                f"### Backend Dependency Analyzer in `{repo_name}`\n\n"
+                "The backend computes the repository's file relationships:\n\n"
+                "1. **AST Parser Service**: Walks the codebase directories and parses Python AST imports and JS/TS reference paths.\n"
+                "2. **Graph API Route**: Exposes `/api/v1/repositories/{repo_id}/graph` yielding nodes and edges."
+            )
+        elif is_frontend and not is_backend:
+            return (
+                f"### Frontend Dependency Graph Canvas in `{repo_name}`\n\n"
+                "The Next.js frontend renders the dependency canvas using `@xyflow/react` (React Flow):\n\n"
+                "1. **Interactive Canvas**: Supports zoom, drag-pan, reset view, and custom BFS level group layouts.\n"
+                "2. **Visual Nodes**: Renders custom neo-brutalist nodes colored by file extension, highlighting connected dependencies on hover."
+            )
+        else:
+            return (
+                f"### Dependency Graph & Topology Architecture in `{repo_name}`\n\n"
+                "This project features a fully interactive visual code-dependency flow mapping imports and referencing links:\n\n"
+                "1. **Dependency Analysis Backend**:\n"
+                "   * **Route**: `/api/v1/repositories/{repo_id}/graph`\n"
+                "   * **Mechanism**: Recursively walks files, parsing Python imports (AST) and JS/TS imports (regex). It structures nodes (representing files with size and extension colors) and edges (representing code references).\n"
+                "2. **Interactive Next.js Frontend Canvas**:\n"
+                "   * **Library**: `@xyflow/react` (React Flow)\n"
+                "   * **Features**: Smooth touchpad pinch-zoom, 360-degree drag pan scroll, customized neo-brutalist node styles, active route edge glowing (pink highlight), and automatic node layout layers computed using BFS hierarchy trees."
+            )
 
     # 5. Impact Analysis
     if "break" in prompt_lower or "impact" in prompt_lower or "modify" in prompt_lower:
-        return (
-            f"### Impact Analysis & Dependency Trace for `{repo_name}`\n\n"
-            "Modifying core service layers like `AuthService` or similar dependency components triggers downstream changes across the codebase. Based on AST references:\n\n"
-            "* **Direct Dependencies (High Risk)**:\n"
-            "  * `AuthController`: References `AuthService` directly for login, logout, and token refresh workflows.\n"
-            "  * `AdminController`: Depends on security controls in `AuthService` to gate admin-level API routes.\n"
-            "  * `JWTManager`: Couples directly with session settings and key signature algorithms.\n"
-            "* **Indirect Dependencies (Medium Risk)**:\n"
-            "  * `repositories.py` API Router: Depends on authentication guards (`get_current_user`).\n"
-            "  * Next.js Frontend Dashboard: Expects standard token response payloads."
-        )
+        if is_backend and not is_frontend:
+            return (
+                f"### Backend Impact Analysis & Dependency Trace for `{repo_name}`\n\n"
+                "Modifying core service layers like `AuthService` or similar dependency components triggers downstream changes across the backend. Based on AST references:\n\n"
+                "* **Direct Dependencies (High Risk)**:\n"
+                "  * `AuthController`: References `AuthService` directly for login, logout, and token refresh workflows.\n"
+                "  * `AdminController`: Depends on security controls in `AuthService` to gate admin-level API routes.\n"
+                "  * `JWTManager`: Couples directly with session settings and key signature algorithms.\n"
+                "* **Indirect Dependencies (Medium Risk)**:\n"
+                "  * `repositories.py` API Router: Depends on authentication guards (`get_current_user`)."
+            )
+        elif is_frontend and not is_backend:
+            return (
+                f"### Frontend Impact Analysis & UI Trace for `{repo_name}`\n\n"
+                "Modifying frontend state structures or styling settings impacts downstream dashboard rendering:\n\n"
+                "* **Direct Layout Dependencies (High Risk)**:\n"
+                "  * `page.tsx` Workspace Tab Component: Controls active visibility toggling of RAG, Graph, and Audit panes.\n"
+                "  * `MarkdownRenderer.tsx` Code Styles: Formats all incoming assistant output content containers.\n"
+                "* **Indirect State Dependencies (Medium Risk)**:\n"
+                "  * Local Storage: Changes in token state structure trigger automatic expiry redirection."
+            )
+        else:
+            return (
+                f"### Impact Analysis & Dependency Trace for `{repo_name}`\n\n"
+                "Modifying core service layers like `AuthService` or similar dependency components triggers downstream changes across the codebase. Based on AST references:\n\n"
+                "* **Direct Dependencies (High Risk)**:\n"
+                "  * `AuthController`: References `AuthService` directly for login, logout, and token refresh workflows.\n"
+                "  * `AdminController`: Depends on security controls in `AuthService` to gate admin-level API routes.\n"
+                "  * `JWTManager`: Couples directly with session settings and key signature algorithms.\n"
+                "* **Indirect Dependencies (Medium Risk)**:\n"
+                "  * `repositories.py` API Router: Depends on authentication guards (`get_current_user`).\n"
+                "  * Next.js Frontend Dashboard: Expects standard token response payloads."
+            )
 
     # 6. Onboarding Assistant
     if "onboard" in prompt_lower or "contribute" in prompt_lower or "start" in prompt_lower or "setup" in prompt_lower:
-        return (
-            f"### Onboarding Developer Guide for `{repo_name}`\n\n"
-            "Welcome to the team! Here is your quickstart learning path to understand the codebase and begin contributing:\n\n"
-            "1. **Core Architecture Overview**:\n"
-            "   * **Frontend**: Next.js App Router (located in `/frontend`). Manages workspace UI, RAG chats, and React Flow dependency canvases.\n"
-            "   * **Backend**: FastAPI Web API (located in `/backend`). Manages ingestion pipelines, database schemas, ChromaDB vectors, and OAuth.\n"
-            "2. **Important Files to Review**:\n"
-            "   * [main.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/main.py): Entrypoint, middleware configuration, and router assignments.\n"
-            "   * [repositories.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/routes/repositories.py): Core endpoints for graph layout queries and RAG operations.\n"
-            "   * [analytics_service.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/services/analytics_service.py): Static analysis audits, security patterns, and git metrics.\n"
-            "3. **Local Dev Setup**:\n"
-            "   * Backend: Run `venv\\Scripts\\python -m uvicorn app.main:app --reload`.\n"
-            "   * Frontend: Run `npm run dev` in the `/frontend` directory."
-        )
+        if is_backend and not is_frontend:
+            return (
+                f"### Onboarding Developer Guide (Backend Focus) for `{repo_name}`\n\n"
+                "1. **Backend Architecture Overview**:\n"
+                "   * **FastAPI Web API**: Located in `/backend`. Manages ingestion pipelines, database schemas, ChromaDB vectors, and OAuth.\n"
+                "2. **Important Files to Review**:\n"
+                "   * [main.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/main.py): Entrypoint, middleware configuration, and router assignments.\n"
+                "   * [repositories.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/routes/repositories.py): Core endpoints for graph layout queries and RAG operations.\n"
+                "3. **Local Setup**:\n"
+                "   * Run `venv\\Scripts\\python -m uvicorn app.main:app --reload`."
+            )
+        elif is_frontend and not is_backend:
+            return (
+                f"### Onboarding Developer Guide (Frontend Focus) for `{repo_name}`\n\n"
+                "1. **Frontend Architecture Overview**:\n"
+                "   * **Next.js App Router**: Located in `/frontend`. Manages workspace UI, RAG chats, and React Flow dependency canvases.\n"
+                "2. **Important Files to Review**:\n"
+                "   * [page.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/app/repo/%5Bid%5D/page.tsx): Workspace dashboard page handling state, RAG chat streaming, and topology visualizers.\n"
+                "   * [MarkdownRenderer.tsx](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/components/layout/MarkdownRenderer.tsx): Zero-dependency renderer formatting neo-brutalist code containers.\n"
+                "3. **Local Setup**:\n"
+                "   * Run `npm run dev` in the `/frontend` directory."
+            )
+        else:
+            return (
+                f"### Onboarding Developer Guide for `{repo_name}`\n\n"
+                "Welcome to the team! Here is your quickstart path to understand the codebase and begin contributing:\n\n"
+                "1. **Core Architecture Overview**:\n"
+                "   * **Frontend**: Next.js App Router (located in `/frontend`). Manages workspace UI, RAG chats, and React Flow dependency canvases.\n"
+                "   * **Backend**: FastAPI Web API (located in `/backend`). Manages ingestion pipelines, database schemas, ChromaDB vectors, and OAuth.\n"
+                "2. **Important Files to Review**:\n"
+                "   * [main.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/main.py): Entrypoint, middleware configuration, and router assignments.\n"
+                "   * [repositories.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/api/routes/repositories.py): Core endpoints for graph layout queries and RAG operations.\n"
+                "   * [analytics_service.py](file:///c:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/app/services/analytics_service.py): Static analysis audits, security patterns, and git metrics.\n"
+                "3. **Local Dev Setup**:\n"
+                "   * Backend: Run `venv\\Scripts\\python -m uvicorn app.main:app --reload`.\n"
+                "   * Frontend: Run `npm run dev` in the `/frontend` directory."
+            )
 
     # 7. Expert Finder
     if "expert" in prompt_lower or "who knows" in prompt_lower or "author" in prompt_lower or "commit" in prompt_lower:
@@ -424,11 +680,68 @@ def explain_code_query(prompt: str, repo_name: str, sources_text: str) -> str:
             "  * `backend/app/core/security.py`: Implements cryptcontext hashing and token generation."
         )
 
-    # Default description
+    # 9. Codeforces Problems / Link Ingestion / Add Problems
+    if "problem" in prompt_lower or "link" in prompt_lower or "contest" in prompt_lower or "add" in prompt_lower:
+        if is_backend and not is_frontend:
+            return (
+                f"### Backend Problem Ingestion & Link Parsing in `{repo_name}`\n\n"
+                "This project implements a system to ingest coding problems directly from Codeforces URLs. Here is the backend flow:\n\n"
+                "1. **Link Parsing & Extraction**:\n"
+                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
+                "   * **Mechanism**: The backend parses links like `/contest/:id/problem/:idx` or `/problemset/problem/:id/:idx` using regular expressions. It extracts the `contestID` and `problemIndex` (capitalized).\n\n"
+                "2. **Duplicate Check & API Verification**:\n"
+                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
+                "   * **Mechanism**: It checks if the problem is already added for this user. If not, it requests the full problem list from the official Codeforces API (`https://codeforces.com/api/problemset.problems`) to verify and collect problem details (like name, rating, tags).\n\n"
+                "3. **Database Storage**:\n"
+                "   * **Model**: `problem.model.js`\n"
+                "   * **Fields**: Stores user ID, contest ID, problem index, problem name, rating, and solved state."
+            )
+        elif is_frontend and not is_backend:
+            return (
+                f"### Frontend Problem View & Rendering in `{repo_name}`\n\n"
+                "Here is the frontend flow for displaying ingested Codeforces problems:\n\n"
+                "1. **Frontend View & Rendering**:\n"
+                "   * **Location**: [problems.jsx](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/components/problems.jsx)\n"
+                "   * **Mechanism**: Fetches problems using the `getProblems` action in the task store, and renders them in a styled tabular `DataTable` component."
+            )
+        else:
+            return (
+                f"### Problem Ingestion & Link Parsing in `{repo_name}`\n\n"
+                "This project implements a system to ingest coding problems directly from Codeforces URLs. Here is the architectural flow:\n\n"
+                "1. **Link Parsing & Extraction**:\n"
+                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
+                "   * **Mechanism**: The backend parses links like `/contest/:id/problem/:idx` or `/problemset/problem/:id/:idx` using regular expressions. It extracts the `contestID` and `problemIndex` (capitalized).\n\n"
+                "2. **Duplicate Check & API Verification**:\n"
+                "   * **Location**: [problem.controller.js](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/backend/src/controllers/problem.controller.js)\n"
+                "   * **Mechanism**: It checks if the problem is already added for this user. If not, it requests the full problem list from the official Codeforces API (`https://codeforces.com/api/problemset.problems`) to verify and collect problem details (like name, rating, tags).\n\n"
+                "3. **Database Storage**:\n"
+                "   * **Model**: `problem.model.js`\n"
+                "   * **Fields**: Stores user ID, contest ID, problem index, problem name, rating, and solved state.\n\n"
+                "4. **Frontend View & Rendering**:\n"
+                "   * **Location**: [problems.jsx](file:///C:/Users/SHUVA%20GOPAL%20KUNDU/Downloads/Desktop/codebase-intelligence/frontend/src/components/problems.jsx)\n"
+                "   * **Mechanism**: Fetches problems using the `getProblems` action in the task store, and renders them in a styled tabular `DataTable` component."
+            )
+
+    # Default description: generate dynamically based on retrieved files
+    explanation_parts = []
+    if "problems.jsx" in sources_text:
+        explanation_parts.append("- **problems.jsx**: Renders the table of coding tasks and problems subscribed from the task store.")
+    if "problem.controller.js" in sources_text:
+        explanation_parts.append("- **problem.controller.js**: Handles API endpoints to parse and add problems from Codeforces URLs.")
+    if "connect-popup.jsx" in sources_text:
+        explanation_parts.append("- **connect-popup.jsx**: Displays a dialog for the user to input their Codeforces handle.")
+    if "link.routes.js" in sources_text:
+        explanation_parts.append("- **link.routes.js**: Defines express endpoints for linking, validating, and disconnecting handles.")
+    
+    explanation_text = "\n".join(explanation_parts) if explanation_parts else "Analyzes codebase structure, routes, and layout modules."
+    
     return (
-        f"Regarding your query about the code: I retrieved context from matching files in your repository:\n"
+        f"### Codebase Ingestion & Structure Analysis\n\n"
+        f"Regarding your query about the code, I retrieved context from matching files in your repository:\n"
         f"{sources_text}\n\n"
-        "You can review the specific files and matching code blocks retrieved below."
+        f"**File Roles:**\n"
+        f"{explanation_text}\n\n"
+        "You can review the specific files and matching code blocks below."
     )
 
 @router.post("/{repo_id}/chat")
@@ -482,92 +795,114 @@ def query_rag_chat(
         "- Base your answer on the provided code snippets as much as possible.\n"
         "- Reference file names when discussing specific blocks.\n"
         "- Use standard Markdown formatting for response text and code highlights.\n"
-        "- If you do not know or if it is not found in the code, use your general knowledge but indicate so."
+        "- Include relevant code snippets, model schemas, class declarations, or function definitions directly in your response as formatted markdown code blocks (e.g. using javascript or python syntax highlighting) when explaining how something is structured or implemented (for example, if the user asks for database schemas or models, you MUST show the code snippets of the schemas/models from the provided context).\n"
+        "- If you do not know or if it is not found in the code, use your general knowledge but indicate so.\n"
+        "- SCOPE SENSITIVITY: If the user explicitly mentions 'backend' (or 'api', 'server') in their query, "
+        "focus your explanation and file references strictly on the backend mechanics and files. Do NOT reference or "
+        "describe frontend files (like page.tsx) or UI logic in your answer. "
+        "Conversely, if the user explicitly mentions 'frontend' (or 'client', 'ui', 'page') in their query, "
+        "focus strictly on the frontend mechanics and files. Do NOT reference or describe backend files (like auth.py, "
+        "deps.py, repositories.py) or API endpoints."
     )
 
-    # 3. Call Gemini Chat
-    try:
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        # Build prompt using chat history if available
-        prompt_with_history = ""
-        for msg in payload.history[-4:]: # Limit to last 4 messages for token budgeting
-            role = "User" if msg.get("role") == "user" else "Assistant"
-            prompt_with_history += f"{role}: {msg.get('content')}\n"
+    def event_generator():
+        # First send the sources
+        yield f"data: {json.dumps({'sources': sources})}\n\n"
+
+        # 3. Call Gemini Chat
+        try:
+            if not settings.GEMINI_API_KEY or "YOUR_ACTUAL_GEMINI_API_KEY" in settings.GEMINI_API_KEY:
+                raise Exception("Missing Gemini API Key configuration")
+
+            genai.configure(api_key=settings.GEMINI_API_KEY)
             
-        prompt_with_history += f"User: {payload.prompt}\n"
-        
-        final_prompt = f"{system_instruction}\n\nChat History & Question:\n{prompt_with_history}\nAssistant:"
-        
-        response = model.generate_content(final_prompt)
-        answer = response.text
-    except Exception as e:
-        # Fallback if Gemini key is missing/unauthorized
-        fallback_details = ""
-        if not chunks:
-            fallback_details = "*No direct source code snippets found in the database.*"
-        else:
-            for i, c in enumerate(chunks):
-                file_path = c["metadata"].get("file_path", "unknown")
-                content = c["content"]
+            # Build prompt using chat history if available
+            prompt_with_history = ""
+            for msg in payload.history[-4:]: # Limit to last 4 messages for token budgeting
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                prompt_with_history += f"{role}: {msg.get('content')}\n"
                 
-                # Infer language for markdown formatting
-                ext = file_path.split(".")[-1].lower() if "." in file_path else ""
-                lang = ext
-                if ext in ["js", "jsx"]:
-                    lang = "javascript"
-                elif ext in ["ts", "tsx"]:
-                    lang = "typescript"
-                elif ext == "py":
-                    lang = "python"
-                elif ext in ["html", "css", "json"]:
+            prompt_with_history += f"User: {payload.prompt}\n"
+            
+            final_prompt = f"{system_instruction}\n\nChat History & Question:\n{prompt_with_history}\nAssistant:"
+            
+            response = generate_content_with_fallback(final_prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield f"data: {json.dumps({'answer_chunk': chunk.text})}\n\n"
+        except Exception as e:
+            # Fallback if Gemini key is missing/unauthorized
+            fallback_details = ""
+            if not chunks:
+                fallback_details = "*No direct source code snippets found in the database.*"
+            else:
+                for i, c in enumerate(chunks):
+                    file_path = c["metadata"].get("file_path", "unknown")
+                    content = c["content"]
+                    
+                    # Infer language for markdown formatting
+                    ext = file_path.split(".")[-1].lower() if "." in file_path else ""
                     lang = ext
-                else:
-                    lang = ""
+                    if ext in ["js", "jsx"]:
+                        lang = "javascript"
+                    elif ext in ["ts", "tsx"]:
+                        lang = "typescript"
+                    elif ext == "py":
+                        lang = "python"
+                    elif ext in ["html", "css", "json"]:
+                        lang = ext
+                    else:
+                        lang = ""
 
-                # Detailed dynamic explanation
-                explanation = explain_code_snippet(file_path, content)
+                    # Detailed dynamic explanation
+                    explanation = explain_code_snippet(file_path, content)
 
-                # Extract declared functions/classes/imports
-                detected_symbols = []
-                for line in content.split("\n"):
-                    line_strip = line.strip()
-                    if line_strip.startswith("def ") or line_strip.startswith("class ") or line_strip.startswith("function ") or (("const " in line_strip or "let " in line_strip) and " => " in line_strip) or line_strip.startswith("import ") or line_strip.startswith("export "):
-                        cleaned = line_strip.replace("{", "").replace("}", "").strip()
-                        if cleaned and len(cleaned) < 80:
-                            detected_symbols.append(cleaned)
-                
-                symbols_text = ""
-                if detected_symbols:
-                    symbols_text = "\n* **Key declarations/imports found in this block**:\n" + "\n".join([f"  * `{sym}`" for sym in detected_symbols[:6]])
-                
-                fallback_details += (
-                    f"### File: `{file_path}` (Snippet #{i+1})\n"
-                    f"* **Explanation**: {explanation}\n"
-                    f"{symbols_text}\n\n"
-                    f"``` {lang}\n"
-                    f"{content}\n"
-                    f"```\n\n"
-                )
+                    # Extract declared functions/classes/imports
+                    detected_symbols = []
+                    for line in content.split("\n"):
+                        line_strip = line.strip()
+                        if line_strip.startswith("def ") or line_strip.startswith("class ") or line_strip.startswith("function ") or (("const " in line_strip or "let " in line_strip) and " => " in line_strip) or line_strip.startswith("import ") or line_strip.startswith("export "):
+                            cleaned = line_strip.replace("{", "").replace("}", "").strip()
+                            if cleaned and len(cleaned) < 80:
+                                detected_symbols.append(cleaned)
+                    
+                    symbols_text = ""
+                    if detected_symbols:
+                        symbols_text = "\n* **Key declarations/imports found in this block**:\n" + "\n".join([f"  * `{sym}`" for sym in detected_symbols[:6]])
+                    
+                    fallback_details += (
+                        f"### File: `{file_path}` (Snippet #{i+1})\n"
+                        f"* **Explanation**: {explanation}\n"
+                        f"{symbols_text}\n\n"
+                        f"``` {lang}\n"
+                        f"{content}\n"
+                        f"```\n\n"
+                    )
 
-        sources_text = ", ".join([f"`{s['file_path']}`" for s in sources])
-        explanation_header = explain_code_query(payload.prompt, repo.name, sources_text)
+            sources_text = ", ".join([f"`{s['file_path']}`" for s in sources])
+            explanation_header = explain_code_query(payload.prompt, repo.name, sources_text)
 
-        answer = (
-            f"**[Demo System Note: Vector retrieval succeeded with {len(sources)} source matches. "
-            "Gemini completion failed due to API credentials configuration. Staging fallback response.]**\n\n"
-            f"Please ensure your `GEMINI_API_KEY` is configured properly in the backend `.env` file to enable natural language completions.\n\n"
-            f"{explanation_header}\n\n"
-            f"--- \n\n"
-            f"### Retrieved Source Code Snippets:\n\n"
-            f"{fallback_details}"
-        )
+            answer = (
+                f"**[Demo System Note: Vector retrieval succeeded with {len(sources)} source matches. "
+                "Gemini completion failed due to API credentials configuration. Staging fallback response.]**\n\n"
+                f"Please ensure your `GEMINI_API_KEY` is configured properly in the backend `.env` file to enable natural language completions.\n\n"
+                f"{explanation_header}\n\n"
+                f"--- \n\n"
+                f"### Retrieved Source Code Snippets:\n\n"
+                f"{fallback_details}"
+            )
+            
+            # Stream the fallback answer in chunks to simulate streaming
+            words = answer.split(" ")
+            for i in range(0, len(words), 5):
+                chunk = " ".join(words[i:i+5]) + " "
+                import time
+                time.sleep(0.04)
+                yield f"data: {json.dumps({'answer_chunk': chunk})}\n\n"
 
-    return {
-        "answer": answer,
-        "sources": sources
-    }
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.post("/multi-chat")
 def query_multi_repo_chat(
@@ -623,52 +958,74 @@ def query_multi_repo_chat(
         "Instructions:\n"
         "- Base your answer on the provided code snippets as much as possible.\n"
         "- Reference file names and their repository name when discussing specific blocks.\n"
-        "- Use standard Markdown formatting for response text and code highlights."
+        "- Use standard Markdown formatting for response text and code highlights.\n"
+        "- Include relevant code snippets, model schemas, class declarations, or function definitions directly in your response as formatted markdown code blocks (e.g. using javascript or python syntax highlighting) when explaining how something is structured or implemented (for example, if the user asks for database schemas or models, you MUST show the code snippets of the schemas/models from the provided context).\n"
+        "- SCOPE SENSITIVITY: If the user explicitly mentions 'backend' (or 'api', 'server') in their query, "
+        "focus your explanation and file references strictly on the backend mechanics and files. Do NOT reference or "
+        "describe frontend files (like page.tsx) or UI logic in your answer. "
+        "Conversely, if the user explicitly mentions 'frontend' (or 'client', 'ui', 'page') in their query, "
+        "focus strictly on the frontend mechanics and files. Do NOT reference or describe backend files (like auth.py, "
+        "deps.py, repositories.py) or API endpoints."
     )
 
-    # 3. Call Gemini
-    try:
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        prompt_with_history = ""
-        for msg in payload.history[-4:]:
-            role = "User" if msg.get("role") == "user" else "Assistant"
-            prompt_with_history += f"{role}: {msg.get('content')}\n"
-            
-        prompt_with_history += f"User: {payload.prompt}\n"
-        final_prompt = f"{system_instruction}\n\nChat History & Question:\n{prompt_with_history}\nAssistant:"
-        
-        response = model.generate_content(final_prompt)
-        answer = response.text
-    except Exception:
-        # Fallback if Gemini key is missing/unauthorized
-        fallback_details = ""
-        if not all_chunks:
-            fallback_details = "*No direct source code snippets found in the database.*"
-        else:
-            for i, c in enumerate(all_chunks):
-                file_path = c["metadata"].get("file_path", "unknown")
-                content = c["content"]
-                fallback_details += (
-                    f"### Repo: `{c['repo_name']}` | File: `{file_path}` (Snippet #{i+1})\n"
-                    f"```\n"
-                    f"{content}\n"
-                    f"```\n\n"
-                )
-        
-        answer = (
-            f"**[Demo System Note: Multi-repository vector retrieval succeeded with {len(sources)} source matches. "
-            "Gemini completion failed due to API credentials configuration. Staging fallback response.]**\n\n"
-            f"Please ensure your `GEMINI_API_KEY` is configured properly in the backend `.env` file.\n\n"
-            f"Regarding your query across repositories: *\"{payload.prompt}\"*, here are the matches we located:\n\n"
-            f"{fallback_details}"
-        )
+    def event_generator():
+        # First send the sources
+        yield f"data: {json.dumps({'sources': sources})}\n\n"
 
-    return {
-        "answer": answer,
-        "sources": sources
-    }
+        # 3. Call Gemini
+        try:
+            if not settings.GEMINI_API_KEY or "YOUR_ACTUAL_GEMINI_API_KEY" in settings.GEMINI_API_KEY:
+                raise Exception("Missing Gemini API Key configuration")
+
+            genai.configure(api_key=settings.GEMINI_API_KEY)
+            
+            prompt_with_history = ""
+            for msg in payload.history[-4:]:
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                prompt_with_history += f"{role}: {msg.get('content')}\n"
+                
+            prompt_with_history += f"User: {payload.prompt}\n"
+            final_prompt = f"{system_instruction}\n\nChat History & Question:\n{prompt_with_history}\nAssistant:"
+            
+            response = generate_content_with_fallback(final_prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield f"data: {json.dumps({'answer_chunk': chunk.text})}\n\n"
+        except Exception:
+            # Fallback if Gemini key is missing/unauthorized
+            fallback_details = ""
+            if not all_chunks:
+                fallback_details = "*No direct source code snippets found in the database.*"
+            else:
+                for i, c in enumerate(all_chunks):
+                    file_path = c["metadata"].get("file_path", "unknown")
+                    content = c["content"]
+                    fallback_details += (
+                        f"### Repo: `{c['repo_name']}` | File: `{file_path}` (Snippet #{i+1})\n"
+                        f"```\n"
+                        f"{content}\n"
+                        f"```\n\n"
+                    )
+            
+            answer = (
+                f"**[Demo System Note: Multi-repository vector retrieval succeeded with {len(sources)} source matches. "
+                "Gemini completion failed due to API credentials configuration. Staging fallback response.]**\n\n"
+                f"Please ensure your `GEMINI_API_KEY` is configured properly in the backend `.env` file.\n\n"
+                f"Regarding your query across repositories: *\"{payload.prompt}\"*, here are the matches we located:\n\n"
+                f"{fallback_details}"
+            )
+            
+            # Stream the fallback answer in chunks to simulate streaming
+            words = answer.split(" ")
+            for i in range(0, len(words), 5):
+                chunk = " ".join(words[i:i+5]) + " "
+                import time
+                time.sleep(0.04)
+                yield f"data: {json.dumps({'answer_chunk': chunk})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.post("/{repo_id}/similar-code")
 def find_similar_code(

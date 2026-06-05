@@ -1,3 +1,21 @@
+# Monkeypatch posthog.capture to prevent TypeError due to signature mismatch with chromadb
+try:
+    import posthog
+    _orig_capture = posthog.capture
+    def safe_posthog_capture(*args, **kwargs):
+        if getattr(posthog, "disabled", False):
+            return None
+        if len(args) == 3:
+            distinct_id, event, properties = args
+            return _orig_capture(event=event, distinct_id=distinct_id, properties=properties, **kwargs)
+        elif len(args) == 2:
+            distinct_id, event = args
+            return _orig_capture(event=event, distinct_id=distinct_id, **kwargs)
+        return _orig_capture(*args, **kwargs)
+    posthog.capture = safe_posthog_capture
+except ImportError:
+    pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
