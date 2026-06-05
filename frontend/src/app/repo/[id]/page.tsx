@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import DashboardShell from "@/components/layout/DashboardShell";
 import axios from 'axios';
+import MarkdownRenderer from "@/components/layout/MarkdownRenderer";
 import { 
   ReactFlow, Background, Controls, MiniMap, 
   useNodesState, useEdgesState, Position, Handle,
@@ -81,12 +82,9 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isFullscreenChat, setIsFullscreenChat] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Multi-Repository Search States
-  const [selectedRepoIds, setSelectedRepoIds] = useState<number[]>([parseInt(repoId)]);
-  const [showMultiRepoMenu, setShowMultiRepoMenu] = useState(false);
 
   // Deep File Code Navigation Drawer States
   const [activeSnippet, setActiveSnippet] = useState<{ file_path: string; chunk_index: number; content: string } | null>(null);
@@ -134,12 +132,14 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
           setActiveSnippet(null);
         } else if (isFullscreenGraph) {
           setIsFullscreenGraph(false);
+        } else if (isFullscreenChat) {
+          setIsFullscreenChat(false);
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFullscreenGraph, activeSnippet]);
+  }, [isFullscreenGraph, isFullscreenChat, activeSnippet]);
 
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
@@ -365,8 +365,12 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
   }, [token, repoId]);
 
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory]);
+    // Scroll to bottom when history changes or when toggled to fullscreen
+    const timer = setTimeout(() => {
+      chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [chatHistory, isFullscreenChat]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -379,37 +383,88 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
     const userMessage: Message = { role: 'user', content: promptText };
     setChatHistory(prev => [...prev, userMessage]);
 
+    // Add placeholder assistant message
+    const placeholderAssistantMessage: Message = {
+      role: 'assistant',
+      content: "",
+      sources: []
+    };
+    setChatHistory(prev => [...prev, placeholderAssistantMessage]);
+
     try {
-      let response;
-      if (selectedRepoIds.length > 1) {
-        // Run multi-repository search
-        response = await axios.post(
-          `http://localhost:8000/api/v1/repositories/multi-chat`,
-          {
-            prompt: promptText,
-            repo_ids: selectedRepoIds,
-            history: chatHistory.map(m => ({ role: m.role, content: m.content }))
-          },
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-      } else {
-        // Standard single repo hybrid search
-        response = await axios.post(
-          `http://localhost:8000/api/v1/repositories/${repoId}/chat`,
-          {
-            prompt: promptText,
-            history: chatHistory.map(m => ({ role: m.role, content: m.content }))
-          },
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+      const requestUrl = `http://localhost:8000/api/v1/repositories/${repoId}/chat`;
+
+      const requestBody = {
+        prompt: promptText,
+        history: chatHistory.map(m => ({ role: m.role, content: m.content }))
+      };
+
+      const fetchResponse = await fetch(requestUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!fetchResponse.ok) {
+        throw new Error(`HTTP error! status: ${fetchResponse.status}`);
       }
 
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: response.data.answer,
-        sources: response.data.sources
-      };
-      setChatHistory(prev => [...prev, assistantMessage]);
+      const reader = fetchResponse.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error("No reader available");
+
+      let accumulatedAnswer = "";
+      let accumulatedSources: any[] = [];
+      let lineBuffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunkText = decoder.decode(value, { stream: true });
+        const text = lineBuffer + chunkText;
+        const lines = text.split("\n");
+        
+        // Save the last element (which might be incomplete if there's no trailing \n)
+        lineBuffer = lines.pop() || "";
+        
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (trimmedLine.startsWith("data: ")) {
+            const dataStr = trimmedLine.replace("data: ", "").trim();
+            if (dataStr === "[DONE]") {
+              break;
+            }
+            try {
+              const dataObj = JSON.parse(dataStr);
+              if (dataObj.sources) {
+                accumulatedSources = dataObj.sources;
+              }
+              if (dataObj.answer_chunk) {
+                accumulatedAnswer += dataObj.answer_chunk;
+              }
+              
+              // Update the last message in history dynamically
+              setChatHistory(prev => {
+                const updated = [...prev];
+                if (updated.length > 0) {
+                  const lastMsg = updated[updated.length - 1];
+                  if (lastMsg.role === 'assistant') {
+                    lastMsg.content = accumulatedAnswer;
+                    lastMsg.sources = accumulatedSources;
+                  }
+                }
+                return updated;
+              });
+            } catch (e) {
+              // Ignore partial JSON parsing errors
+            }
+          }
+        }
+      }
     } catch (error: any) {
       console.error("Failed to fetch response:", error);
       if (error.response?.status === 401) {
@@ -417,11 +472,13 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
         setToken(null);
         router.push("/");
       } else {
-        const errorMessage: Message = {
-          role: 'assistant',
-          content: "Sorry, I encountered an error searching the database or generating a response."
-        };
-        setChatHistory(prev => [...prev, errorMessage]);
+        setChatHistory(prev => {
+          const updated = [...prev];
+          if (updated.length > 0 && updated[updated.length - 1].role === 'assistant' && updated[updated.length - 1].content === "") {
+            updated[updated.length - 1].content = "Sorry, I encountered an error searching the database or generating a response.";
+          }
+          return updated;
+        });
       }
     } finally {
       setIsSending(false);
@@ -450,11 +507,128 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
-  const toggleRepoSelection = (id: number) => {
-    setSelectedRepoIds(prev => 
-      prev.includes(id) 
-        ? (prev.length > 1 ? prev.filter(item => item !== id) : prev)
-        : [...prev, id]
+  const renderChatContent = (isOverlay: boolean) => {
+    return (
+      <div className={`flex flex-col h-full overflow-hidden ${isOverlay ? '' : 'border-4 border-pg-fg rounded-[32px] bg-white shadow-hard h-[calc(100vh-14rem)] min-h-[500px]'}`}>
+        {/* Header */}
+        <div className="bg-pg-muted border-b-4 border-pg-fg px-6 py-4 flex flex-wrap items-center justify-between gap-4 select-none">
+          <div className="flex items-center gap-2">
+            <div className="bg-pg-accent text-white p-1.5 rounded-full border-2 border-pg-fg">
+              <Sparkles size={16} strokeWidth={2.5} />
+            </div>
+            <span className="font-heading font-black text-sm">Repo AI Chat Assistant (Hybrid Search)</span>
+          </div>
+          
+          <div>
+            {!isOverlay ? (
+              <button
+                type="button"
+                onClick={() => setIsFullscreenChat(true)}
+                className="bg-white text-pg-fg border-2 border-pg-fg px-3.5 py-1.5 rounded-full font-black text-[10px] shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5"
+              >
+                Fullscreen Chat View
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsFullscreenChat(false)}
+                className="bg-pg-secondary text-pg-fg border-2 border-pg-fg px-3.5 py-1.5 rounded-full font-black text-[10px] shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5"
+              >
+                Minimize View
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Message Display Area */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-pg-bg bg-dot-grid">
+          {chatHistory.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-pg-fg text-center p-8 select-none">
+              <div className="bg-white border-2 border-pg-fg p-3 rounded-full shadow-hard mb-3">
+                <Sparkles size={24} className="text-pg-accent" strokeWidth={2.5} />
+              </div>
+              <h5 className="text-base font-black">Ask anything about this codebase!</h5>
+              <p className="text-xs font-bold text-pg-fg/60 max-w-xs mt-1">
+                Query vector embeddings and keyword logic. Ask questions, setup guidelines, or request impact analysis reports.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {chatHistory.map((msg, index) => {
+                const isUser = msg.role === 'user';
+                return (
+                  <div key={index} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+                    <div className={`max-w-[85%] border-2 border-pg-fg p-4 rounded-2xl shadow-hard font-sans text-sm leading-relaxed ${isUser ? 'bg-pg-accent text-white rounded-br-none' : 'bg-white text-pg-fg rounded-bl-none'}`}>
+                      
+                      {isUser ? (
+                        <div className="whitespace-pre-wrap select-text">{msg.content}</div>
+                      ) : (
+                        <MarkdownRenderer content={msg.content} />
+                      )}
+
+                      {/* Citations badges linking to navigation drawer */}
+                      {!isUser && msg.sources && msg.sources.length > 0 && (
+                        <div className="mt-4 pt-3 border-t border-pg-fg/10 select-none">
+                          <span className="text-[10px] font-black uppercase text-pg-fg/50 flex items-center gap-1.5 mb-1.5">
+                            <Terminal size={10} />
+                            Source Reference Files:
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {msg.sources.map((s, i) => (
+                              <button 
+                                key={i}
+                                onClick={() => s.content && setActiveSnippet({
+                                  file_path: s.file_path,
+                                  chunk_index: s.chunk_index,
+                                  content: s.content
+                                })}
+                                className="inline-flex items-center gap-1 bg-pg-muted border border-pg-fg/20 px-2 py-0.5 rounded-lg text-[9px] font-black text-pg-fg hover:bg-pg-tertiary cursor-pointer active:scale-95 transition-transform"
+                              >
+                                <FileText size={9} />
+                                <span>{s.file_path.split("/").pop()}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {isSending && (
+                <div className="flex justify-start animate-pulse">
+                  <div className="bg-white border-2 border-pg-fg p-4 rounded-2xl rounded-bl-none shadow-hard text-pg-fg flex items-center gap-2 select-none">
+                    <Loader2 className="animate-spin text-pg-accent" size={16} strokeWidth={3} />
+                    <span className="text-xs font-black">Scanning vector databases & file ranks...</span>
+                  </div>
+                </div>
+              )}
+              <div ref={chatBottomRef} />
+            </div>
+          )}
+        </div>
+
+        {/* Form Input */}
+        <div className="p-4 bg-white border-t-4 border-pg-fg select-none">
+          <form onSubmit={handleSendMessage} className="relative flex items-center">
+            <input
+              type="text"
+              placeholder="Ask the AI about this codebase..."
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              disabled={isSending}
+              className="w-full h-14 pl-4 pr-16 bg-pg-muted text-pg-fg font-bold placeholder-pg-fg/40 rounded-xl border-2 border-pg-fg focus:outline-none focus:border-pg-accent text-sm"
+            />
+            <button
+              type="submit"
+              disabled={isSending || !chatInput.trim()}
+              className="absolute right-2.5 top-2.5 flex items-center justify-center bg-pg-accent text-white border-2 border-pg-fg w-9 h-9 rounded-lg font-black shadow-hard hover:shadow-[1px_1px_0px_0px_rgba(30,41,59,1)] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Send size={14} strokeWidth={2.5} />
+            </button>
+          </form>
+        </div>
+      </div>
     );
   };
 
@@ -579,137 +753,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
         <div className="lg:col-span-9">
 
           {/* 1. TAB: AI RAG CHAT */}
-          {activeTab === 'chat' && (
-            <div className="border-4 border-pg-fg rounded-[32px] bg-white shadow-hard flex flex-col h-[calc(100vh-14rem)] min-h-[500px] overflow-hidden">
-              {/* Header */}
-              <div className="bg-pg-muted border-b-4 border-pg-fg px-6 py-4 flex flex-wrap items-center justify-between gap-4 select-none">
-                <div className="flex items-center gap-2">
-                  <div className="bg-pg-accent text-white p-1.5 rounded-full border-2 border-pg-fg">
-                    <Sparkles size={16} strokeWidth={2.5} />
-                  </div>
-                  <span className="font-heading font-black text-sm">Repo AI Chat Assistant (Hybrid Search)</span>
-                </div>
-                
-                {/* Multi-Repo Selection Dropdown */}
-                <div className="relative">
-                  <button
-                    onClick={() => setShowMultiRepoMenu(!showMultiRepoMenu)}
-                    className="bg-white text-pg-fg border-2 border-pg-fg px-3.5 py-1.5 rounded-full font-black text-[10px] shadow-hard flex items-center gap-1.5 hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5"
-                  >
-                    <span>Multi-Repo Search ({selectedRepoIds.length})</span>
-                    <ChevronRight size={10} className={`transform transition-transform ${showMultiRepoMenu ? 'rotate-90' : ''}`} />
-                  </button>
-
-                  {showMultiRepoMenu && (
-                    <div className="absolute right-0 mt-2 w-64 bg-white border-4 border-pg-fg p-3.5 rounded-2xl shadow-hard z-30 flex flex-col gap-2 max-h-60 overflow-y-auto">
-                      <h6 className="text-[9px] font-heading font-black text-pg-fg/40 uppercase tracking-wider mb-1">
-                        Select Services to Chat With
-                      </h6>
-                      {allRepos.map((repo) => (
-                        <label 
-                          key={repo.id} 
-                          className="flex items-center gap-2 text-xs font-bold text-pg-fg cursor-pointer hover:bg-pg-muted p-1.5 rounded-lg"
-                        >
-                          <input 
-                            type="checkbox"
-                            checked={selectedRepoIds.includes(repo.id)}
-                            onChange={() => toggleRepoSelection(repo.id)}
-                            className="rounded border-2 border-pg-fg accent-pg-accent cursor-pointer"
-                          />
-                          <span className="truncate">{repo.name.split("/").pop()}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Message Display Area */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-pg-bg bg-dot-grid">
-                {chatHistory.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-pg-fg text-center p-8 select-none">
-                    <div className="bg-white border-2 border-pg-fg p-3 rounded-full shadow-hard mb-3">
-                      <Sparkles size={24} className="text-pg-accent" strokeWidth={2.5} />
-                    </div>
-                    <h5 className="text-base font-black">Ask anything about this codebase!</h5>
-                    <p className="text-xs font-bold text-pg-fg/60 max-w-xs mt-1">
-                      Query vector embeddings and keyword logic. Ask questions, setup guidelines, or request impact analysis reports.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {chatHistory.map((msg, index) => {
-                      const isUser = msg.role === 'user';
-                      return (
-                        <div key={index} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-                          <div className={`max-w-[85%] border-2 border-pg-fg p-4 rounded-2xl shadow-hard font-sans text-sm leading-relaxed ${isUser ? 'bg-pg-accent text-white rounded-br-none' : 'bg-white text-pg-fg rounded-bl-none'}`}>
-                            
-                            <div className="whitespace-pre-wrap select-text markdown-render">{msg.content}</div>
-
-                            {/* Citations badges linking to navigation drawer */}
-                            {!isUser && msg.sources && msg.sources.length > 0 && (
-                              <div className="mt-4 pt-3 border-t border-pg-fg/10 select-none">
-                                <span className="text-[10px] font-black uppercase text-pg-fg/50 flex items-center gap-1.5 mb-1.5">
-                                  <Terminal size={10} />
-                                  Source Reference Files:
-                                </span>
-                                <div className="flex flex-wrap gap-2">
-                                  {msg.sources.map((s, i) => (
-                                    <button 
-                                      key={i}
-                                      onClick={() => s.content && setActiveSnippet({
-                                        file_path: s.file_path,
-                                        chunk_index: s.chunk_index,
-                                        content: s.content
-                                      })}
-                                      className="inline-flex items-center gap-1 bg-pg-muted border border-pg-fg/20 px-2 py-0.5 rounded-lg text-[9px] font-black text-pg-fg hover:bg-pg-tertiary cursor-pointer active:scale-95 transition-transform"
-                                    >
-                                      <FileText size={9} />
-                                      <span>{s.file_path.split("/").pop()}</span>
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {isSending && (
-                      <div className="flex justify-start animate-pulse">
-                        <div className="bg-white border-2 border-pg-fg p-4 rounded-2xl rounded-bl-none shadow-hard text-pg-fg flex items-center gap-2 select-none">
-                          <Loader2 className="animate-spin text-pg-accent" size={16} strokeWidth={3} />
-                          <span className="text-xs font-black">Scanning vector databases & file ranks...</span>
-                        </div>
-                      </div>
-                    )}
-                    <div ref={chatBottomRef} />
-                  </div>
-                )}
-              </div>
-
-              {/* Form Input */}
-              <div className="p-4 bg-white border-t-4 border-pg-fg select-none">
-                <form onSubmit={handleSendMessage} className="relative flex items-center">
-                  <input
-                    type="text"
-                    placeholder="Ask the AI about this codebase..."
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    disabled={isSending}
-                    className="w-full h-14 pl-4 pr-16 bg-pg-muted text-pg-fg font-bold placeholder-pg-fg/40 rounded-xl border-2 border-pg-fg focus:outline-none focus:border-pg-accent text-sm"
-                  />
-                  <button
-                    type="submit"
-                    disabled={isSending || !chatInput.trim()}
-                    className="absolute right-2.5 top-2.5 flex items-center justify-center bg-pg-accent text-white border-2 border-pg-fg w-9 h-9 rounded-lg font-black shadow-hard hover:shadow-[1px_1px_0px_0px_rgba(30,41,59,1)] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all disabled:opacity-40 disabled:pointer-events-none"
-                  >
-                    <Send size={14} strokeWidth={2.5} />
-                  </button>
-                </form>
-              </div>
-            </div>
-          )}
+          {activeTab === 'chat' && !isFullscreenChat && renderChatContent(false)}
 
           {/* 2. TAB: TOPOLOGY GRAPH */}
           {activeTab === 'graph' && (
@@ -1052,7 +1096,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
 
       {/* Code Navigation Drawer (Feature 12 Jump directly to Code citation chunk content) */}
       {activeSnippet && (
-        <div className="fixed inset-y-0 right-0 w-full md:w-[600px] bg-white border-l-8 border-pg-fg z-50 shadow-[0_0_50px_rgba(0,0,0,0.4)] flex flex-col animate-slide-in pointer-events-auto select-none">
+        <div className="fixed inset-y-0 right-0 w-full md:w-[600px] bg-white border-l-8 border-pg-fg z-[60] shadow-[0_0_50px_rgba(0,0,0,0.4)] flex flex-col animate-slide-in pointer-events-auto select-none">
           {/* Header */}
           <div className="bg-pg-muted border-b-4 border-pg-fg px-6 py-5 flex items-center justify-between">
             <div className="flex items-center gap-2 truncate pr-4">
@@ -1178,6 +1222,33 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
               >
                 Reset View
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fullscreen Overlay Chat Modal */}
+      {isFullscreenChat && (
+        <div className="fixed inset-0 z-50 bg-pg-bg flex flex-col w-screen h-screen select-none animate-bounce-pop pointer-events-auto">
+          {/* Header row in full screen */}
+          <div className="bg-white border-b-4 border-pg-fg px-6 py-4 flex items-center justify-between z-30 shadow-sm pointer-events-auto">
+            <div className="bg-pg-muted border-2 border-pg-fg rounded-full px-5 py-2 text-xs font-black text-pg-fg flex items-center gap-2">
+              <Sparkles size={14} strokeWidth={2.5} className="text-pg-accent" />
+              <span className="truncate max-w-xs">{repoName} - AI Chat Assistant</span>
+            </div>
+            
+            <button
+              onClick={() => setIsFullscreenChat(false)}
+              className="bg-pg-secondary text-pg-fg border-2 border-pg-fg px-6 py-2 rounded-full font-black shadow-hard hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-0.5 active:translate-y-0.5 text-xs transition-transform duration-200 cursor-pointer pointer-events-auto z-40"
+            >
+              Back to Workspace View (Esc)
+            </button>
+          </div>
+
+          {/* Chat container in fullscreen */}
+          <div className="flex-1 p-6 flex justify-center items-center overflow-hidden">
+            <div className="w-full max-w-5xl h-full border-4 border-pg-fg rounded-[32px] bg-white shadow-hard flex flex-col overflow-hidden">
+              {renderChatContent(true)}
             </div>
           </div>
         </div>

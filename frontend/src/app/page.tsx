@@ -59,12 +59,12 @@ export default function Home() {
     setToken(storedToken);
   }, []);
 
-  // Fetch repositories & set up status polling
+  // Fetch repositories & continuous polling
   useEffect(() => {
     if (!token) return;
 
-    let pollInterval: NodeJS.Timeout;
-
+    // Define async fetch function and manage polling interval
+    let pollInterval: NodeJS.Timeout | null = null;
     const fetchRepos = async () => {
       try {
         const response = await axios.get("http://localhost:8000/api/v1/repositories/my", {
@@ -72,18 +72,14 @@ export default function Home() {
         });
         setRepos(response.data);
         setIsLoadingRepos(false);
-
-        // Check if we need to poll (if any repo is pending or indexing)
+        // Determine if any repo is still processing
         const hasActiveJobs = response.data.some(
           (repo: Repository) => repo.status === 'pending' || repo.status === 'indexing'
         );
-
-        if (hasActiveJobs) {
-          if (!pollInterval) {
-            pollInterval = setInterval(fetchRepos, 3000);
-          }
-        } else if (pollInterval) {
+        // If no active jobs, stop polling
+        if (!hasActiveJobs && pollInterval) {
           clearInterval(pollInterval);
+          pollInterval = null;
         }
       } catch (error: any) {
         console.error("Failed to fetch repositories:", error);
@@ -96,8 +92,11 @@ export default function Home() {
       }
     };
 
+    // Initial fetch
     fetchRepos();
-
+    // Start polling interval (will be cleared when no active jobs)
+    pollInterval = setInterval(fetchRepos, 3000);
+    // Cleanup on unmount
     return () => {
       if (pollInterval) clearInterval(pollInterval);
     };
@@ -161,11 +160,6 @@ export default function Home() {
       
       setRepoUrl("");
       setSubmitSuccess(true);
-      // Fetch immediately to add the pending repo
-      const updatedResponse = await axios.get("http://localhost:8000/api/v1/repositories/my", {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setRepos(updatedResponse.data);
     } catch (error: any) {
       if (error.response?.status === 401) {
         localStorage.removeItem("token");
