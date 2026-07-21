@@ -1,3 +1,8 @@
+import os
+import pickle
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import google.generativeai as genai
 import time
 import math
@@ -5,6 +10,23 @@ import re
 from typing import List, Dict, Any
 from app.core.config import settings
 from app.database.session import get_chroma
+from sentence_transformers import SentenceTransformer
+import torch
+
+if torch.cuda.is_available():
+    print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+else:
+    print("Using CPU")
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# BGE-large-en-v1.5 outputs 1024-dimensional embeddings
+embedding_model = SentenceTransformer(
+    "BAAI/bge-large-en-v1.5",
+    device=device
+)
+
+print(f"Embedding model loaded on {device}")
 
 def generate_content_with_fallback(prompt: str, stream: bool = False):
     models = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
@@ -34,50 +56,24 @@ def generate_content_with_fallback(prompt: str, stream: bool = False):
             continue
     raise Exception("All Gemini models in fallback chain failed.")
 
-def embed_content_with_fallback(texts: List[str], task_type: str = "retrieval_document") -> List[List[float]]:
-    models = ["models/gemini-embedding-2", "models/gemini-embedding-001"]
-    for model_name in models:
-        try:
-            max_retries = 3
-            backoff = 2
-            for attempt in range(max_retries):
-                try:
-                    response = genai.embed_content(
-                        model=model_name,
-                        content=texts,
-                        task_type=task_type,
-                    )
-                    return response['embedding']
-                except Exception as embed_err:
-                    if "429" in str(embed_err) or "quota" in str(embed_err).lower() or "limit" in str(embed_err).lower():
-                        if attempt < max_retries - 1:
-                            sleep_time = backoff * (2 ** attempt)
-                            print(f"Rate limit (429) hit during embedding with {model_name}. Retrying in {sleep_time} seconds (attempt {attempt + 1}/{max_retries})...")
-                            time.sleep(sleep_time)
-                            continue
-                    raise embed_err
-        except Exception as e:
-            print(f"Embedding with model {model_name} failed: {e}. Trying next fallback...")
-            continue
-    raise Exception("All Gemini embedding models in fallback chain failed.")
 
 class BM25Retriever:
-    def __init__(self, corpus: List[Dict[str, Any]], k1: float = 1.5, b: float = 0.75):
+    def __init__(self, corpus: List[Dict[str, Any]] = None, k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
-        self.corpus = corpus
+        self.corpus = corpus or []
         self.doc_len = []
         self.avg_doc_len = 0.0
         self.doc_term_freqs = []
         self.idf = {}
-        self.doc_count = len(corpus)
-        self._initialize()
+        self.doc_count = len(self.corpus)
+        if self.corpus:
+            self._initialize()
 
     def _tokenize(self, text: str) -> List[str]:
         tokens = [w.lower() for w in re.findall(r"\b[a-zA-Z0-9_-]+\b", text) if len(w) > 1]
         stemmed_tokens = []
         for t in tokens:
-            # Simple singularization to handle singular/plural mismatches (e.g. schemas vs schema, models vs model)
             if t.endswith("s") and len(t) > 2 and not t.endswith("ss"):
                 stemmed_tokens.append(t[:-1])
             stemmed_tokens.append(t)
@@ -87,7 +83,9 @@ class BM25Retriever:
         total_len = 0
         df = {}
         for item in self.corpus:
-            tokens = self._tokenize(item["content"])
+            # OPTIMIZATION: Use pre-tokenized chunks if the parser provided them
+            tokens = item.get("tokens") if "tokens" in item else self._tokenize(item["content"])
+            
             self.doc_len.append(len(tokens))
             total_len += len(tokens)
             
@@ -123,66 +121,86 @@ class BM25Retriever:
 
 class VectorService:
     def __init__(self):
-        # Authenticate with Google's Gemini API
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        # Using Google's standard embedding model
-        self.embed_model = "models/gemini-embedding-2" 
-        
-        # Connect to your local ChromaDB
         self.chroma_client = get_chroma()
+        self.collection = self.chroma_client.get_or_create_collection(name="codebase_chunks")
         
-        # A collection in ChromaDB is just like a table in PostgreSQL
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="codebase_chunks"
-        )
+        self.bm25_indices: Dict[int, BM25Retriever] = {}
+        self.bm25_cache_dir = "bm25_cache"
+        os.makedirs(self.bm25_cache_dir, exist_ok=True)
 
     def embed_and_store(self, chunks: List[Dict[str, Any]], repo_id: int):
         """
-        Sends the code chunks to Gemini to get vectors (embeddings), 
-        and saves them into ChromaDB for AI searching.
+        Executes BM25 Indexing, GPU Embedding, and DB Ingestion in parallel threads.
         """
         if not chunks:
             return
 
-        texts_to_embed = [chunk["content"] for chunk in chunks]
-        
-        # We process in batches of 100 to avoid hitting API size limits
-        batch_size = 100
-        
-        for i in range(0, len(texts_to_embed), batch_size):
-            batch_texts = texts_to_embed[i:i + batch_size]
-            batch_chunks = chunks[i:i + batch_size]
-            
+        # Queue sizes bounded to prevent memory bloat if GPU is much faster than I/O
+        db_queue = queue.Queue(maxsize=5)
+
+        def build_bm25_task():
             try:
-                # 1. Ask Gemini to convert the code text into Math Vectors
-                # Fallback to mock embeddings if API key is not set to allow offline/local testing
-                if "YOUR_ACTUAL_GEMINI_API_KEY" in settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY:
-                    embeddings = [[0.1 * (k % 10) for k in range(3072)] for _ in batch_texts]
-                else:
-                    try:
-                        embeddings = embed_content_with_fallback(batch_texts, task_type="retrieval_document")
-                    except Exception as embed_err:
-                        print(f"Gemini embedding failed ({embed_err}). Falling back to mock embeddings...")
-                        embeddings = [[0.1 * (k % 10) for k in range(3072)] for _ in batch_texts] 
+                print(f"[CPU] Building BM25 index for repo {repo_id}...")
+                bm25 = BM25Retriever(corpus=chunks)
+                self.bm25_indices[repo_id] = bm25
                 
-                # 2. Prepare the data packages for ChromaDB
-                batch_documents = []
-                batch_metadatas = []
-                batch_ids = []
+                cache_path = os.path.join(self.bm25_cache_dir, f"repo_{repo_id}.pkl")
+                with open(cache_path, "wb") as f:
+                    pickle.dump(bm25, f)
+                print(f"[CPU] BM25 index saved to {cache_path}")
+            except Exception as e:
+                print(f"Warning: Failed to build/save BM25 index: {e}")
+
+        def gpu_encode_task():
+            try:
+                texts_to_embed = [chunk["content"] for chunk in chunks]
+                batch_size = 100
                 
-                for j, chunk in enumerate(batch_chunks):
-                    # Chroma requires a unique string ID for every single chunk
-                    doc_id = f"repo_{repo_id}_{chunk['metadata']['file_path']}_{chunk['metadata']['chunk_index']}"
+                for i in range(0, len(texts_to_embed), batch_size):
+                    batch_texts = texts_to_embed[i:i + batch_size]
+                    batch_chunks = chunks[i:i + batch_size]
                     
-                    # Attach the repo_id so we can filter searches by repository later!
-                    meta = chunk["metadata"]
-                    meta["repo_id"] = repo_id
+                    # GPU processing
+                    embeddings = embedding_model.encode(
+                        batch_texts,
+                        batch_size=32,
+                        convert_to_numpy=True,
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                    ).tolist()
                     
-                    batch_documents.append(chunk["content"])
-                    batch_metadatas.append(meta)
-                    batch_ids.append(doc_id)
+                    batch_documents = []
+                    batch_metadatas = []
+                    batch_ids = []
+                    
+                    for chunk in batch_chunks:
+                        doc_id = f"repo_{repo_id}_{chunk['metadata']['file_path']}_{chunk['metadata']['chunk_index']}"
+                        meta = chunk["metadata"].copy()
+                        meta["repo_id"] = repo_id
+                        
+                        batch_documents.append(chunk["content"])
+                        batch_metadatas.append(meta)
+                        batch_ids.append(doc_id)
+                    
+                    # Pass off to DB ingestor thread
+                    db_queue.put((batch_documents, embeddings, batch_metadatas, batch_ids))
+            
+            except Exception as e:
+                db_queue.put(e)  # Pass exception down to surface it
+                raise e
+            finally:
+                db_queue.put(None)  # Sentinel to stop DB consumer
+
+        def db_insert_task():
+            while True:
+                item = db_queue.get()
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item  # Raise the exception from the GPU thread
+
+                batch_documents, embeddings, batch_metadatas, batch_ids = item
                 
-                # 3. Save everything into the Vector Database
                 try:
                     self.collection.add(
                         documents=batch_documents,
@@ -191,32 +209,31 @@ class VectorService:
                         ids=batch_ids
                     )
                 except Exception as e_add:
-                    # If we encounter a dimension mismatch (e.g. from prior mock 768-dim run), recreate the collection
                     if "dimension" in str(e_add).lower() or "dimensionality" in str(e_add).lower():
-                        print("Dimension mismatch detected in ChromaDB collection. Re-creating collection 'codebase_chunks'...")
-                        try:
-                            self.chroma_client.delete_collection("codebase_chunks")
-                            self.collection = self.chroma_client.get_or_create_collection(name="codebase_chunks")
-                            self.collection.add(
-                                documents=batch_documents,
-                                embeddings=embeddings,
-                                metadatas=batch_metadatas,
-                                ids=batch_ids
-                            )
-                        except Exception as e_recreate:
-                            print(f"Failed to recover from dimension mismatch: {e_recreate}")
-                            raise e_add
+                        print("[I/O] Dimension mismatch detected. Re-creating collection 'codebase_chunks'...")
+                        self.chroma_client.delete_collection("codebase_chunks")
+                        self.collection = self.chroma_client.get_or_create_collection(name="codebase_chunks")
+                        self.collection.add(
+                            documents=batch_documents,
+                            embeddings=embeddings,
+                            metadatas=batch_metadatas,
+                            ids=batch_ids
+                        )
                     else:
                         raise e_add
-                
-            except Exception as e:
-                print(f"Error embedding batch: {e}")
-                raise Exception(f"Failed to embed and store chunks: {str(e)}")
+
+        # Run all three tasks concurrently
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            db_future = executor.submit(db_insert_task)
+            gpu_future = executor.submit(gpu_encode_task)
+            bm25_future = executor.submit(build_bm25_task)
+            
+            # Wait for completion and raise any exceptions that occurred in the threads
+            bm25_future.result()
+            gpu_future.result()
+            db_future.result()
 
     def reciprocal_rank_fusion(self, vector_results: List[Dict[str, Any]], bm25_results: List[Dict[str, Any]], k: int = 60) -> List[Dict[str, Any]]:
-        """
-        Combines vector search matches and BM25 matches using Reciprocal Rank Fusion.
-        """
         rrf_scores = {}
         for rank, item in enumerate(vector_results):
             key = f"{item['metadata']['file_path']}_{item['metadata']['chunk_index']}"
@@ -242,10 +259,6 @@ class VectorService:
         return fused_results
 
     def rerank_candidates_with_gemini(self, query: str, candidates: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
-        """
-        Queries Gemini to re-rank candidate code snippets based on query relevance.
-        Falls back to original RRF order if Gemini is unconfigured/fails.
-        """
         if not candidates:
             return []
         if "YOUR_ACTUAL_GEMINI_API_KEY" in settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY:
@@ -291,7 +304,6 @@ class VectorService:
                         reranked.append(candidates[index])
                         seen.add(index)
                 
-                # Fill remaining spots if less than limit was outputted
                 for idx, item in enumerate(candidates):
                     if idx not in seen:
                         reranked.append(item)
@@ -302,12 +314,7 @@ class VectorService:
         return candidates[:limit]
 
     def query_similar_code(self, query: str, repo_id: int, limit: int = 5) -> List[Dict[str, Any]]:
-        """
-        Retrieves similar codebase chunks using a Hybrid Search model:
-        Combines semantic vector embeddings + BM25 keyword matching, then re-ranks them.
-        """
         try:
-            # 1. Detect scope from query
             query_lower = query.lower()
             backend_keywords = {
                 "backend", "server", "database", "db", "api", "controller", "route", "endpoints", 
@@ -347,21 +354,19 @@ class VectorService:
                     return not is_backend_file
                 return True
 
-            # If a specific scope is requested, retrieve more candidates so filtering doesn't leave us empty
             retrieve_limit = limit * 6 if scope != "both" else limit * 3
 
-            # 2. Embed query
-            if "YOUR_ACTUAL_GEMINI_API_KEY" in settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY:
-                query_embedding = [0.1 * (k % 10) for k in range(3072)]
-            else:
-                try:
-                    embeddings = embed_content_with_fallback([query], task_type="retrieval_query")
-                    query_embedding = embeddings[0]
-                except Exception as embed_err:
-                    print(f"Gemini query embedding failed ({embed_err}). Falling back to mock query embedding...")
-                    query_embedding = [0.1 * (k % 10) for k in range(3072)]
+            try:
+                query_embedding = embedding_model.encode(
+                    query,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                    show_progress_bar=False
+                ).tolist()
+            except Exception as embed_err:
+                print(f"Local BGE query embedding failed ({embed_err}). Falling back to default baseline...")
+                query_embedding = [0.0] * 1024
             
-            # 3. Semantic Vector search query
             vector_matches = []
             try:
                 vector_results = self.collection.query(
@@ -383,27 +388,26 @@ class VectorService:
                 else:
                     raise e_query
 
-            # 4. BM25 Keyword Search
             bm25_matches = []
             try:
-                all_chunks = self.collection.get(where={"repo_id": repo_id})
-                if all_chunks and all_chunks.get("documents") and len(all_chunks["documents"]) > 0:
-                    corpus = []
-                    for j in range(len(all_chunks["documents"])):
-                        corpus.append({
-                            "content": all_chunks["documents"][j],
-                            "metadata": all_chunks["metadatas"][j]
-                        })
-                    
-                    bm25 = BM25Retriever(corpus)
+                bm25 = self.bm25_indices.get(repo_id)
+                
+                if not bm25:
+                    cache_path = os.path.join(self.bm25_cache_dir, f"repo_{repo_id}.pkl")
+                    if os.path.exists(cache_path):
+                        with open(cache_path, "rb") as f:
+                            bm25 = pickle.load(f)
+                            self.bm25_indices[repo_id] = bm25
+                
+                if bm25 and bm25.corpus:
                     scores = bm25.get_scores(query)
                     
                     scored_corpus = []
                     for idx, score in enumerate(scores):
                         if score > 0.0:
-                            file_path = corpus[idx]["metadata"].get("file_path", "")
+                            file_path = bm25.corpus[idx]["metadata"].get("file_path", "")
                             if is_file_in_scope(file_path):
-                                item = corpus[idx].copy()
+                                item = bm25.corpus[idx].copy()
                                 item["bm25_score"] = score
                                 scored_corpus.append(item)
                     
@@ -412,21 +416,15 @@ class VectorService:
             except Exception as e_bm25:
                 print(f"BM25 retrieval failed: {e_bm25}")
 
-            # 5. Fusion (RRF)
             fused_candidates = self.reciprocal_rank_fusion(vector_matches, bm25_matches)
 
-            # Boost matches based on query intent and file path keywords (e.g. model, schema, db)
-            query_lower = query.lower()
             if "schema" in query_lower or "model" in query_lower or "db" in query_lower or "database" in query_lower:
                 for item in fused_candidates:
                     file_path = item["metadata"].get("file_path", "").lower()
                     if "model" in file_path or "schema" in file_path or "db" in file_path:
                         item["rrf_score"] = item.get("rrf_score", 0.0) * 2.0
-                # Re-sort fused candidates after boosting
                 fused_candidates = sorted(fused_candidates, key=lambda x: x.get("rrf_score", 0.0), reverse=True)
 
-            # 6. Re-ranking
-            # Expand the list passed to LLM for re-ranking to get a better selection
             rerank_pool_size = limit * 3 if scope != "both" else limit * 2
             candidates_to_rerank = fused_candidates[:rerank_pool_size]
             final_ranked = self.rerank_candidates_with_gemini(query, candidates_to_rerank, limit)
@@ -438,11 +436,15 @@ class VectorService:
             raise Exception(f"Hybrid search failed: {str(e)}")
 
     def delete_repository_vectors(self, repo_id: int):
-        """
-        Deletes all code chunks associated with a repo_id from ChromaDB.
-        """
         try:
             self.collection.delete(where={"repo_id": repo_id})
+            
+            self.bm25_indices.pop(repo_id, None)
+            
+            cache_path = os.path.join(self.bm25_cache_dir, f"repo_{repo_id}.pkl")
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                
         except Exception as e:
             print(f"Error deleting vectors for repo {repo_id}: {e}")
             raise Exception(f"Failed to delete repository vectors: {str(e)}")
