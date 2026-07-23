@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str
 
     # NEW
+    COHERE_API_KEY: str
+
     EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
 
     REPO_STORAGE_DIR: str = "/tmp/repos"

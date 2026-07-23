@@ -4,31 +4,24 @@ import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import google.generativeai as genai
+import cohere
 import time
 import math
 import re
 from typing import List, Dict, Any
 from app.core.config import settings
 from app.database.session import get_chroma
-from sentence_transformers import SentenceTransformer
-import torch
 
-if torch.cuda.is_available():
-    print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-else:
-    print("Using CPU")
+# Initialize Cohere Client (Ensure COHERE_API_KEY is in your settings or environment)
+cohere_api_key = getattr(settings, "COHERE_API_KEY", os.environ.get("COHERE_API_KEY"))
+co = cohere.Client(cohere_api_key)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# BGE-large-en-v1.5 outputs 1024-dimensional embeddings
-embedding_model = SentenceTransformer(
-    "BAAI/bge-large-en-v1.5",
-    device=device
-)
-
-print(f"Embedding model loaded on {device}")
+print("Cohere client initialized for Embeddings and Reranking")
 
 def generate_content_with_fallback(prompt: str, stream: bool = False):
+    """
+    Uses Gemini for answer generation, fulfilling the generation step of RAG.
+    """
     models = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
     for model_name in models:
         try:
@@ -83,7 +76,6 @@ class BM25Retriever:
         total_len = 0
         df = {}
         for item in self.corpus:
-            # OPTIMIZATION: Use pre-tokenized chunks if the parser provided them
             tokens = item.get("tokens") if "tokens" in item else self._tokenize(item["content"])
             
             self.doc_len.append(len(tokens))
@@ -130,12 +122,11 @@ class VectorService:
 
     def embed_and_store(self, chunks: List[Dict[str, Any]], repo_id: int):
         """
-        Executes BM25 Indexing, GPU Embedding, and DB Ingestion in parallel threads.
+        Executes BM25 Indexing, Cohere Embedding API, and DB Ingestion in parallel threads.
         """
         if not chunks:
             return
 
-        # Queue sizes bounded to prevent memory bloat if GPU is much faster than I/O
         db_queue = queue.Queue(maxsize=5)
 
         def build_bm25_task():
@@ -151,53 +142,102 @@ class VectorService:
             except Exception as e:
                 print(f"Warning: Failed to build/save BM25 index: {e}")
 
-        def gpu_encode_task():
-            try:
-                texts_to_embed = [chunk["content"] for chunk in chunks]
-                batch_size = 100
-                
-                for i in range(0, len(texts_to_embed), batch_size):
-                    batch_texts = texts_to_embed[i:i + batch_size]
-                    batch_chunks = chunks[i:i + batch_size]
-                    
-                    # GPU processing
-                    embeddings = embedding_model.encode(
-                        batch_texts,
-                        batch_size=32,
-                        convert_to_numpy=True,
-                        normalize_embeddings=True,
-                        show_progress_bar=False,
-                    ).tolist()
-                    
-                    batch_documents = []
-                    batch_metadatas = []
-                    batch_ids = []
-                    
-                    for chunk in batch_chunks:
-                        doc_id = f"repo_{repo_id}_{chunk['metadata']['file_path']}_{chunk['metadata']['chunk_index']}"
-                        meta = chunk["metadata"].copy()
-                        meta["repo_id"] = repo_id
-                        
-                        batch_documents.append(chunk["content"])
-                        batch_metadatas.append(meta)
-                        batch_ids.append(doc_id)
-                    
-                    # Pass off to DB ingestor thread
-                    db_queue.put((batch_documents, embeddings, batch_metadatas, batch_ids))
+        def embed_api_task():
+            import concurrent.futures
             
+            texts_to_embed = [chunk["content"] for chunk in chunks]
+            batch_size = 96
+            
+            # 1. Lower the safety threshold to 80,000 (gives a 20k buffer)
+            TOKEN_LIMIT_PER_MIN = 80000 
+            tokens_in_window = 0
+            window_start = time.time()
+            
+            def _api_worker(b_texts, b_chunks, max_retries=3):
+                for attempt in range(max_retries):
+                    try:
+                        embeddings_response = co.embed(
+                            texts=b_texts,
+                            model="embed-english-v3.0",
+                            input_type="search_document"
+                        )
+                        embeddings = embeddings_response.embeddings
+                        
+                        b_documents = []
+                        b_metadatas = []
+                        b_ids = []
+                        
+                        for chunk in b_chunks:
+                            doc_id = f"repo_{repo_id}_{chunk['metadata']['file_path']}_{chunk['metadata']['chunk_index']}"
+                            meta = chunk["metadata"].copy()
+                            meta["repo_id"] = repo_id
+                            
+                            b_documents.append(chunk["content"])
+                            b_metadatas.append(meta)
+                            b_ids.append(doc_id)
+                        
+                        db_queue.put((b_documents, embeddings, b_metadatas, b_ids))
+                        return
+                        
+                    except Exception as api_err:
+                        if "429" in str(api_err) or "rate limit" in str(api_err).lower():
+                            if attempt < max_retries - 1:
+                                # 2. If we hit the limit, we MUST wait for the minute window to reset. 
+                                print(f"[API] Token bucket exhausted. Sleeping 60s for minute rollover (Attempt {attempt + 1}/{max_retries})...")
+                                time.sleep(60.0) 
+                            else:
+                                raise api_err
+                        else:
+                            raise api_err
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as api_pool:
+                    futures = []
+                    
+                    for i in range(0, len(texts_to_embed), batch_size):
+                        batch_texts = texts_to_embed[i:i + batch_size]
+                        batch_chunks = chunks[i:i + batch_size]
+                        
+                        # 3. Conservative token estimation: assume 1 token per 3 chars, plus a baseline of 5 tokens per chunk
+                        estimated_batch_tokens = sum((len(text) // 3) + 5 for text in batch_texts)
+                        
+                        current_time = time.time()
+                        elapsed_in_window = current_time - window_start
+                        
+                        if elapsed_in_window >= 60.0:
+                            tokens_in_window = 0
+                            window_start = current_time
+                            
+                        elif tokens_in_window + estimated_batch_tokens > TOKEN_LIMIT_PER_MIN:
+                            sleep_time = 60.0 - elapsed_in_window
+                            if sleep_time > 0:
+                                print(f"[API] Max throughput reached ({tokens_in_window} tokens). Yielding for {sleep_time:.2f}s...")
+                                time.sleep(sleep_time)
+                            
+                            tokens_in_window = 0
+                            window_start = time.time()
+                        
+                        tokens_in_window += estimated_batch_tokens
+                        
+                        future = api_pool.submit(_api_worker, batch_texts, batch_chunks)
+                        futures.append(future)
+                    
+                    for future in concurrent.futures.as_completed(futures):
+                        future.result() 
+                        
             except Exception as e:
-                db_queue.put(e)  # Pass exception down to surface it
+                db_queue.put(e)  
                 raise e
             finally:
-                db_queue.put(None)  # Sentinel to stop DB consumer
-
+                db_queue.put(None)
+                
         def db_insert_task():
             while True:
                 item = db_queue.get()
                 if item is None:
                     break
                 if isinstance(item, Exception):
-                    raise item  # Raise the exception from the GPU thread
+                    raise item 
 
                 batch_documents, embeddings, batch_metadatas, batch_ids = item
                 
@@ -225,12 +265,12 @@ class VectorService:
         # Run all three tasks concurrently
         with ThreadPoolExecutor(max_workers=3) as executor:
             db_future = executor.submit(db_insert_task)
-            gpu_future = executor.submit(gpu_encode_task)
+            api_future = executor.submit(embed_api_task)
             bm25_future = executor.submit(build_bm25_task)
             
             # Wait for completion and raise any exceptions that occurred in the threads
             bm25_future.result()
-            gpu_future.result()
+            api_future.result()
             db_future.result()
 
     def reciprocal_rank_fusion(self, vector_results: List[Dict[str, Any]], bm25_results: List[Dict[str, Any]], k: int = 60) -> List[Dict[str, Any]]:
@@ -258,60 +298,29 @@ class VectorService:
             
         return fused_results
 
-    def rerank_candidates_with_gemini(self, query: str, candidates: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    def rerank_candidates_with_cohere(self, query: str, candidates: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
         if not candidates:
             return []
-        if "YOUR_ACTUAL_GEMINI_API_KEY" in settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY:
-            return candidates[:limit]
         
         try:
-            candidates_text = ""
-            for idx, item in enumerate(candidates):
-                file_path = item["metadata"].get("file_path", "unknown")
-                content = item["content"]
-                content_snippet = content[:600]
-                candidates_text += f"[Candidate Index {idx}] (File: {file_path})\n{content_snippet}\n---\n"
+            documents = [item["content"] for item in candidates]
             
-            prompt = (
-                "You are an expert system re-ranker. Given a user query and a set of candidate code snippets, "
-                "select the most relevant candidate snippets that contain the specific code structure, declaration, or logic "
-                "to answer the query.\n\n"
-                f"User Query: {query}\n\n"
-                "Candidate Code Snippets:\n"
-                f"{candidates_text}\n"
-                "Instructions:\n"
-                f"- Select the top {limit} most relevant snippets from the list of candidates above.\n"
-                "- Return your selection as a JSON list of candidate indices in order of relevance (e.g., [2, 0, 4, 1]).\n"
-                "- Output ONLY the JSON list itself. Do not include any explanations, introduction, markdown blocks, or other text."
+            response = co.rerank(
+                model="rerank-english-v3.0",
+                query=query,
+                documents=documents,
+                top_n=limit
             )
             
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            response = generate_content_with_fallback(prompt, stream=False)
-            
-            import json
-            resp_text = response.text.strip()
-            if resp_text.startswith("```"):
-                resp_text = re.sub(r"^```(?:json)?\n", "", resp_text)
-                resp_text = re.sub(r"\n```$", "", resp_text)
-            resp_text = resp_text.strip()
-            
-            indices = json.loads(resp_text)
-            if isinstance(indices, list):
-                reranked = []
-                seen = set()
-                for index in indices:
-                    if isinstance(index, int) and 0 <= index < len(candidates) and index not in seen:
-                        reranked.append(candidates[index])
-                        seen.add(index)
+            reranked_candidates = []
+            for result in response.results:
+                candidate_index = result.index
+                reranked_candidates.append(candidates[candidate_index])
                 
-                for idx, item in enumerate(candidates):
-                    if idx not in seen:
-                        reranked.append(item)
-                return reranked[:limit]
+            return reranked_candidates
         except Exception as err:
-            print(f"Gemini re-ranking failed ({err}). Falling back to RRF rankings...")
-        
-        return candidates[:limit]
+            print(f"Cohere re-ranking failed ({err}). Falling back to RRF rankings...")
+            return candidates[:limit]
 
     def query_similar_code(self, query: str, repo_id: int, limit: int = 5) -> List[Dict[str, Any]]:
         try:
@@ -356,15 +365,16 @@ class VectorService:
 
             retrieve_limit = limit * 6 if scope != "both" else limit * 3
 
+            # Use Cohere to Embed the Query
             try:
-                query_embedding = embedding_model.encode(
-                    query,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True,
-                    show_progress_bar=False
-                ).tolist()
+                query_embedding_response = co.embed(
+                    texts=[query],
+                    model="embed-english-v3.0",
+                    input_type="search_query"
+                )
+                query_embedding = query_embedding_response.embeddings[0]
             except Exception as embed_err:
-                print(f"Local BGE query embedding failed ({embed_err}). Falling back to default baseline...")
+                print(f"Cohere query embedding failed ({embed_err}). Falling back to default baseline...")
                 query_embedding = [0.0] * 1024
             
             vector_matches = []
@@ -427,7 +437,9 @@ class VectorService:
 
             rerank_pool_size = limit * 3 if scope != "both" else limit * 2
             candidates_to_rerank = fused_candidates[:rerank_pool_size]
-            final_ranked = self.rerank_candidates_with_gemini(query, candidates_to_rerank, limit)
+            
+            # Use Cohere Rerank API
+            final_ranked = self.rerank_candidates_with_cohere(query, candidates_to_rerank, limit)
 
             return [{"content": item["content"], "metadata": item["metadata"]} for item in final_ranked]
 
