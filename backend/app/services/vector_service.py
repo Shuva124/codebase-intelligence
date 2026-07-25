@@ -1,18 +1,17 @@
 import os
 import pickle
 import queue
-import threading
-from concurrent.futures import ThreadPoolExecutor
-import google.generativeai as genai
-import cohere
 import time
 import math
 import re
+import concurrent.futures
 from typing import List, Dict, Any
+import google.generativeai as genai
+import cohere
 from app.core.config import settings
 from app.database.session import get_chroma
 
-# Initialize Cohere Client (Ensure COHERE_API_KEY is in your settings or environment)
+# Initialize Cohere Client
 cohere_api_key = getattr(settings, "COHERE_API_KEY", os.environ.get("COHERE_API_KEY"))
 co = cohere.Client(cohere_api_key)
 
@@ -121,9 +120,6 @@ class VectorService:
         os.makedirs(self.bm25_cache_dir, exist_ok=True)
 
     def embed_and_store(self, chunks: List[Dict[str, Any]], repo_id: int):
-        """
-        Executes BM25 Indexing, Cohere Embedding API, and DB Ingestion in parallel threads.
-        """
         if not chunks:
             return
 
@@ -143,12 +139,9 @@ class VectorService:
                 print(f"Warning: Failed to build/save BM25 index: {e}")
 
         def embed_api_task():
-            import concurrent.futures
-            
             texts_to_embed = [chunk["content"] for chunk in chunks]
             batch_size = 96
             
-            # 1. Lower the safety threshold to 80,000 (gives a 20k buffer)
             TOKEN_LIMIT_PER_MIN = 80000 
             tokens_in_window = 0
             window_start = time.time()
@@ -156,9 +149,10 @@ class VectorService:
             def _api_worker(b_texts, b_chunks, max_retries=3):
                 for attempt in range(max_retries):
                     try:
+                        # FIX 1: Use the correct v4 Embed model ID
                         embeddings_response = co.embed(
                             texts=b_texts,
-                            model="embed-english-v3.0",
+                            model="embed-v4.0",
                             input_type="search_document"
                         )
                         embeddings = embeddings_response.embeddings
@@ -182,7 +176,6 @@ class VectorService:
                     except Exception as api_err:
                         if "429" in str(api_err) or "rate limit" in str(api_err).lower():
                             if attempt < max_retries - 1:
-                                # 2. If we hit the limit, we MUST wait for the minute window to reset. 
                                 print(f"[API] Token bucket exhausted. Sleeping 60s for minute rollover (Attempt {attempt + 1}/{max_retries})...")
                                 time.sleep(60.0) 
                             else:
@@ -198,7 +191,6 @@ class VectorService:
                         batch_texts = texts_to_embed[i:i + batch_size]
                         batch_chunks = chunks[i:i + batch_size]
                         
-                        # 3. Conservative token estimation: assume 1 token per 3 chars, plus a baseline of 5 tokens per chunk
                         estimated_batch_tokens = sum((len(text) // 3) + 5 for text in batch_texts)
                         
                         current_time = time.time()
@@ -230,7 +222,7 @@ class VectorService:
                 raise e
             finally:
                 db_queue.put(None)
-                
+
         def db_insert_task():
             while True:
                 item = db_queue.get()
@@ -262,13 +254,11 @@ class VectorService:
                     else:
                         raise e_add
 
-        # Run all three tasks concurrently
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             db_future = executor.submit(db_insert_task)
             api_future = executor.submit(embed_api_task)
             bm25_future = executor.submit(build_bm25_task)
             
-            # Wait for completion and raise any exceptions that occurred in the threads
             bm25_future.result()
             api_future.result()
             db_future.result()
@@ -305,8 +295,9 @@ class VectorService:
         try:
             documents = [item["content"] for item in candidates]
             
+            # FIX 2: Use the correct v4 Rerank model ID
             response = co.rerank(
-                model="rerank-english-v3.0",
+                model="rerank-v4.0-fast",
                 query=query,
                 documents=documents,
                 top_n=limit
@@ -365,11 +356,11 @@ class VectorService:
 
             retrieve_limit = limit * 6 if scope != "both" else limit * 3
 
-            # Use Cohere to Embed the Query
             try:
+                # FIX 3: Use the correct v4 Embed model ID for query matching
                 query_embedding_response = co.embed(
                     texts=[query],
-                    model="embed-english-v3.0",
+                    model="embed-v4.0",
                     input_type="search_query"
                 )
                 query_embedding = query_embedding_response.embeddings[0]
@@ -438,7 +429,6 @@ class VectorService:
             rerank_pool_size = limit * 3 if scope != "both" else limit * 2
             candidates_to_rerank = fused_candidates[:rerank_pool_size]
             
-            # Use Cohere Rerank API
             final_ranked = self.rerank_candidates_with_cohere(query, candidates_to_rerank, limit)
 
             return [{"content": item["content"], "metadata": item["metadata"]} for item in final_ranked]
