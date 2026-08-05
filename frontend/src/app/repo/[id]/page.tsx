@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import DashboardShell from "@/components/layout/DashboardShell";
+import { API_BASE_URL } from "@/lib/api";
 import axios from 'axios';
 import MarkdownRenderer from "@/components/layout/MarkdownRenderer";
 import { 
@@ -199,7 +200,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
 
     const interval = setInterval(async () => {
       try {
-        const response = await axios.get("http://localhost:8000/api/v1/repositories/my", {
+        const response = await axios.get(`${API_BASE_URL}/api/v1/repositories/my`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         const currentRepo = response.data.find((r: any) => r.id === parseInt(repoId));
@@ -223,7 +224,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
     const fetchWorkspaceData = async () => {
       try {
         // Fetch all user repositories for Multi-Repo dropdown
-        const repoResponse = await axios.get("http://localhost:8000/api/v1/repositories/my", {
+        const repoResponse = await axios.get(`${API_BASE_URL}/api/v1/repositories/my`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setAllRepos(repoResponse.data);
@@ -237,7 +238,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
         }
 
         // Fetch dependency graph
-        const graphResponse = await axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/graph`, {
+        const graphResponse = await axios.get(`${API_BASE_URL}/api/v1/repositories/${repoId}/graph`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
@@ -340,19 +341,19 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
       try {
         setIsLoadingAnalytics(true);
         // File sizes, lines, function stats
-        const metricsRes = await axios.get(`http://localhost:8000/api/v1/analytics/${repoId}/analytics`, {
+        const metricsRes = await axios.get(`${API_BASE_URL}/api/v1/analytics/${repoId}/analytics`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setMetrics(metricsRes.data);
 
         // Contributors list
-        const gitRes = await axios.get(`http://localhost:8000/api/v1/analytics/${repoId}/contributors`, {
+        const gitRes = await axios.get(`${API_BASE_URL}/api/v1/analytics/${repoId}/contributors`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setContributors(gitRes.data);
 
         // Timeline log lists
-        const timelineRes = await axios.get(`http://localhost:8000/api/v1/analytics/${repoId}/timeline`, {
+        const timelineRes = await axios.get(`${API_BASE_URL}/api/v1/analytics/${repoId}/timeline`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setTimeline(timelineRes.data);
@@ -367,7 +368,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
       try {
         setIsLoadingAudit(true);
         // Code vulnerabilities & dead code scan
-        const auditRes = await axios.get(`http://localhost:8000/api/v1/analytics/${repoId}/audit`, {
+        const auditRes = await axios.get(`${API_BASE_URL}/api/v1/analytics/${repoId}/audit`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setAuditData(auditRes.data);
@@ -410,7 +411,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
     setChatHistory(prev => [...prev, placeholderAssistantMessage]);
 
     try {
-      const requestUrl = `http://localhost:8000/api/v1/repositories/${repoId}/chat`;
+      const requestUrl = `${API_BASE_URL}/api/v1/repositories/${repoId}/chat`;
 
       const requestBody = {
         prompt: promptText,
@@ -512,7 +513,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
     setDuplicateScanResults([]);
     try {
       const res = await axios.post(
-        `http://localhost:8000/api/v1/repositories/${repoId}/similar-code`,
+        `${API_BASE_URL}/api/v1/repositories/${repoId}/similar-code`,
         { code_block: duplicateScanCode },
         { headers: { Authorization: `Bearer ${token}` } }
       );

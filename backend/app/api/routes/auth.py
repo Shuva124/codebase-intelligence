@@ -88,7 +88,8 @@ async def callback_github(code: str, db: Session = Depends(get_db)):
             db.refresh(user)
             
         token = create_access_token(subject=str(user.id))
-        return RedirectResponse(url=f"http://localhost:3000/auth/callback?token={token}")
+        frontend_url = settings.FRONTEND_URL.rstrip('/')
+        return RedirectResponse(url=f"{frontend_url}/auth/callback?token={token}")
 
     # 2. Real GitHub OAuth Integration
     async with httpx.AsyncClient() as client:
@@ -174,7 +175,8 @@ async def callback_github(code: str, db: Session = Depends(get_db)):
 
     # 3. Issue Platform JWT & Redirect to Frontend
     token = create_access_token(subject=str(user.id))
-    return RedirectResponse(url=f"http://localhost:3000/auth/callback?token={token}")
+    frontend_url = settings.FRONTEND_URL.rstrip('/')
+    return RedirectResponse(url=f"{frontend_url}/auth/callback?token={token}")
 
 @router.get("/me", response_model=UserResponse)
 def get_current_user_profile(current_user: User = Depends(get_current_user)):

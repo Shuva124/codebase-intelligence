@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: codebase-intelligence-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 10000
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 60
+      - key: REPO_STORAGE_DIR
+        value: /tmp/repos
+      - key: CHROMA_PERSIST_DIR
+        value: /tmp/chroma_db

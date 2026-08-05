@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { FolderGit2, Search, Settings, Menu, GitBranch, ArrowRight, X, FileText, Terminal, Sparkles } from 'lucide-react';
+import { API_BASE_URL } from "@/lib/api";
 import axios from 'axios';
 
 export default function DashboardShell({ children, hideHeader = false }: { children: React.ReactNode, hideHeader?: boolean }) {
@@ -13,7 +14,7 @@ export default function DashboardShell({ children, hideHeader = false }: { child
     const token = localStorage.getItem("token");
     if (!token) return;
 
-    axios.get("http://localhost:8000/api/v1/auth/me", {
+    axios.get(`${API_BASE_URL}/api/v1/auth/me`, {
       headers: { Authorization: `Bearer ${token}` }
     })
     .then(response => {
@@ -133,8 +134,8 @@ export default function DashboardShell({ children, hideHeader = false }: { child
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="border-2 border-pg-fg rounded-xl p-5 bg-white shadow-hard flex items-center justify-between">
               <div>
-                <h4 className="font-heading font-black text-lg">SQLite Core Database</h4>
-                <p className="text-xs font-bold text-pg-fg/70 mt-1">codebase_intel.db (Metadata Storage)</p>
+                <h4 className="font-heading font-black text-lg">PostgreSQL Core Database</h4>
+                <p className="text-xs font-bold text-pg-fg/70 mt-1">PostgreSQL Database (Metadata Storage)</p>
               </div>
               <span className="bg-pg-mint text-pg-fg text-xs font-black border-2 border-pg-fg px-3 py-1 rounded-full shadow-hard">
                 Connected

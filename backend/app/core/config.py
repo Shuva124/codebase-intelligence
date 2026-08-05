@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str = "MOCK"
     GITHUB_CLIENT_SECRET: str = "MOCK"
 
+    FRONTEND_URL: str = "http://localhost:3000"
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

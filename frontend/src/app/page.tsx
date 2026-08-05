@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import DashboardShell from "@/components/layout/DashboardShell";
+import { API_BASE_URL } from "@/lib/api";
 import axios from 'axios';
 import { 
   Sparkles, Search, Code, CheckCircle2, ChevronRight, FileText, 
@@ -70,7 +71,7 @@ export default function Home() {
   const fetchRepos = useCallback(async () => {
     if (!token) return;
     try {
-      const response = await axios.get("http://localhost:8000/api/v1/repositories/my", {
+      const response = await axios.get(`${API_BASE_URL}/api/v1/repositories/my`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setRepos(response.data);
@@ -133,7 +134,7 @@ export default function Home() {
     setConfirmDeleteId(null);
 
     try {
-      await axios.delete(`http://localhost:8000/api/v1/repositories/${repoId}`, {
+      await axios.delete(`${API_BASE_URL}/api/v1/repositories/${repoId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setRepos(prev => prev.filter(r => r.id !== repoId));
@@ -161,7 +162,7 @@ export default function Home() {
 
     try {
       const response = await axios.post(
-        "http://localhost:8000/api/v1/repositories/index",
+        `${API_BASE_URL}/api/v1/repositories/index`,
         { url: repoUrl, is_public: true },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -212,7 +213,7 @@ export default function Home() {
           </p>
 
           <a 
-            href="http://localhost:8000/api/v1/auth/login/github"
+            href={`${API_BASE_URL}/api/v1/auth/login/github`}
             className="inline-flex items-center gap-3 bg-pg-accent text-white px-8 py-4 rounded-full font-black border-4 border-pg-fg shadow-hard hover:shadow-hard-hover hover:-translate-x-[4px] hover:-translate-y-[4px] active:translate-x-[2px] active:translate-y-[2px] active:shadow-hard-active transition-all duration-300 ease-bounce-pop text-lg mx-auto"
           >
             <GithubIcon size={24} strokeWidth={2.5} />
@@ -383,7 +384,7 @@ export default function Home() {
                             e.stopPropagation();
                             if (confirm(`Are you sure you want to re-index ${repo.name}?`)) {
                               try {
-                                await axios.post(`http://localhost:8000/api/v1/repositories/${repo.id}/reindex`, {}, {
+                                await axios.post(`${API_BASE_URL}/api/v1/repositories/${repo.id}/reindex`, {}, {
                                   headers: { Authorization: `Bearer ${token}` }
                                 });
                                 // Locally update state to pending to show immediate loading
