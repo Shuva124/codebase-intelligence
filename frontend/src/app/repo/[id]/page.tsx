@@ -680,7 +680,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
               onClick={async () => {
                 if (confirm("Are you sure you want to re-index this repository? This will redirect you to the dashboard while processing.")) {
                   try {
-                    await axios.post(`http://localhost:8000/api/v1/repositories/${repoId}/reindex`, {}, {
+                    await axios.post(`${API_BASE_URL}/api/v1/repositories/${repoId}/reindex`, {}, {
                       headers: { Authorization: `Bearer ${token}` }
                     });
                     router.push("/");
