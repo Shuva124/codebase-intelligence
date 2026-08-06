@@ -326,7 +326,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
           setToken(null);
           router.push("/");
         } else {
-          console.error("Failed to load workspace files:", error);
+          console.warn("Failed to load workspace files:", error.message || error);
         }
       }
     };
@@ -360,7 +360,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
         setTimeline(timelineRes.data);
         setIsLoadingAnalytics(false);
       } catch (err: any) {
-        console.error("Failed to load analytics:", err);
+        console.warn("Failed to load analytics:", err.message || err);
         setIsLoadingAnalytics(false);
       }
     };
@@ -375,7 +375,7 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
         setAuditData(auditRes.data);
         setIsLoadingAudit(false);
       } catch (err: any) {
-        console.error("Failed to load code audit:", err);
+        console.warn("Failed to load code audit:", err.message || err);
         setIsLoadingAudit(false);
       }
     };
