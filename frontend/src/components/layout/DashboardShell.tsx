@@ -21,10 +21,11 @@ export default function DashboardShell({ children, hideHeader = false }: { child
       setUser(response.data);
     })
     .catch(error => {
-      console.error("Failed to fetch user profile:", error);
       if (error.response?.status === 401) {
         localStorage.removeItem("token");
         window.location.href = "/";
+      } else {
+        console.error("Failed to fetch user profile:", error);
       }
     });
   }, []);

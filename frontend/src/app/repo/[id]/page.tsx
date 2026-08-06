@@ -319,13 +319,14 @@ function RepoWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
         setIsLoading(false);
         setIsLoadingGraph(false);
       } catch (error: any) {
-        console.error("Failed to load workspace files:", error);
         setIsLoading(false);
         setIsLoadingGraph(false);
         if (error.response?.status === 401) {
           localStorage.removeItem("token");
           setToken(null);
           router.push("/");
+        } else {
+          console.error("Failed to load workspace files:", error);
         }
       }
     };

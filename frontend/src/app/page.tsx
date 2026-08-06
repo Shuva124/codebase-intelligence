@@ -77,12 +77,13 @@ export default function Home() {
       setRepos(response.data);
       setIsLoadingRepos(false);
     } catch (error: any) {
-      console.error("Failed to fetch repositories:", error);
       setIsLoadingRepos(false);
       if (error.response?.status === 401) {
         localStorage.removeItem("token");
         setToken(null);
         router.push("/");
+      } else {
+        console.error("Failed to fetch repositories:", error);
       }
     }
   }, [token, router]);
@@ -176,7 +177,20 @@ export default function Home() {
         setToken(null);
         router.push("/");
       } else {
-        const errMsg = error.response?.data?.detail || "Failed to index repository. Make sure it is a valid GitHub URL.";
+        const detail = error.response?.data?.detail;
+        let errMsg = "Failed to index repository. Make sure it is a valid GitHub URL.";
+        if (typeof detail === 'string') {
+          errMsg = detail;
+        } else if (Array.isArray(detail) && detail.length > 0) {
+          const firstErr = detail[0];
+          if (typeof firstErr === 'string') {
+            errMsg = firstErr;
+          } else if (firstErr && typeof firstErr === 'object' && firstErr.msg) {
+            errMsg = `Invalid URL: ${firstErr.msg}`;
+          }
+        } else if (detail && typeof detail === 'object' && detail.msg) {
+          errMsg = detail.msg;
+        }
         setSubmitError(errMsg);
       }
     } finally {
